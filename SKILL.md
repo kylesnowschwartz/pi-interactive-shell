@@ -1,11 +1,11 @@
 ---
-name: pi-interactive-shell
-description: Cheat sheet + workflow for launching interactive coding-agent CLIs (Claude Code, Gemini CLI, Codex CLI, Cursor CLI, and pi itself) via the interactive_shell overlay or headless dispatch. Use for TUI agents and long-running processes that need supervision, fire-and-forget delegation, or headless background execution. Regular bash commands should use the bash tool instead.
+name: interactive-shell
+description: Cheat sheet + workflow for launching interactive coding-agent CLIs (Claude Code, Gemini CLI, Codex CLI, Cursor CLI, and pi itself) via the interactive_shell overlay, headless dispatch, or monitor mode. Use for TUI agents and long-running processes that need supervision, fire-and-forget delegation, or event-driven background monitoring. Regular bash commands should use the bash tool instead.
 ---
 
 # Interactive Shell (Skill)
 
-Last verified: 2026-04-05
+Last verified: 2026-04-21
 
 ## Foreground vs Background Subagents
 
@@ -23,6 +23,8 @@ Pi has two ways to delegate work to other AI coding agents:
 **Foreground subagents** run in an overlay where the user watches (and can intervene). Use `interactive_shell` with `mode: "hands-free"` to monitor while receiving periodic updates, or `mode: "dispatch"` to be notified on completion without polling.
 
 **Dispatch subagents** also use `interactive_shell` but with `mode: "dispatch"`. The agent fires the session and moves on. When the session completes, the agent is woken up via `triggerTurn` with the output in context. Add `background: true` for headless execution (no overlay).
+
+**Monitor mode** (`mode: "monitor"`) runs headless and event-driven. It wakes the agent on structured monitor trigger events (stream or poll-diff), so there is no polling loop.
 
 **Background subagents** run invisibly via the `subagent` tool. Pi-only, but captures full output and supports parallel execution.
 
@@ -122,6 +124,36 @@ interactive_shell({
 // → No overlay. User can /attach to watch. Agent notified on completion.
 ```
 
+### Monitor (Event-Driven, Headless)
+Run a background process and wake the agent on structured monitor triggers.
+
+```typescript
+interactive_shell({
+  command: 'npm test --watch',
+  mode: "monitor",
+  monitor: {
+    strategy: "stream",
+    triggers: [
+      { id: "failed", literal: "FAIL" },
+      { id: "error", regex: "/error|warn/i" }
+    ],
+    throttle: { dedupeExactLine: true }
+  }
+})
+
+interactive_shell({
+  command: 'curl -sf http://localhost:3000/health',
+  mode: "monitor",
+  monitor: {
+    strategy: "poll-diff",
+    triggers: [{ id: "changed", regex: "/./" }],
+    poll: { intervalMs: 5000 }
+  }
+})
+```
+
+Use monitor mode for log watchers and long-running checks where polling would be noisy or expensive.
+
 ### Hands-Free (Foreground Subagent) - NON-BLOCKING
 Agent works autonomously, **returns immediately** with sessionId. You query for status/output and kill when done.
 
@@ -159,13 +191,41 @@ const result = interactive_shell({
 
 The user sees the overlay immediately. You get control back to continue working. If the user types to take over a monitored hands-free or dispatch session, they can press `Ctrl+G` to return control to the agent.
 
+### Update Modes (How You Get Woken)
+
+The agent has no scheduler — it only runs when invoked. The extension invokes the agent via `triggerTurn` based on `handsFree.updateMode`:
+
+| `updateMode` | Wake-up trigger | Good for |
+|---|---|---|
+| `"on-quiet"` (default) | Output has been silent for `quietThreshold` ms (default 8s), after a `gracePeriod` (default 15s) | Task-oriented subagents whose output pauses when work is done |
+| `"interval"` | Every `updateInterval` ms (default 60s), regardless of output activity | Continuously-redrawing TUIs (dashboards, transcript viewers, live log streams) — output is never "quiet" so `on-quiet` never fires |
+
+Additional automatic wake-ups fire regardless of `updateMode`:
+- **User takeover** — user typed into the overlay. Status becomes `user-takeover`.
+- **Agent resumed** — user pressed `Ctrl+G` after a takeover. Status goes back to `running`.
+- **Backgrounded** — user pressed `Ctrl+B` or the agent called `background: true`. Session keeps running headless.
+- **Exited / killed** — the process ended on its own or `kill: true` was called.
+- **Dispatch completion** (dispatch mode only) — fires on any of the above with a tail of output.
+- **Monitor trigger** (monitor mode only) — fires when a configured trigger matches.
+
+```typescript
+// Constantly-redrawing TUI — use interval mode so you actually get woken:
+interactive_shell({
+  command: 'tail-claude',
+  mode: "hands-free",
+  handsFree: { updateMode: "interval", updateInterval: 30000 }
+})
+```
+
+With the default `on-quiet`, TUIs like `htop`, `tail-claude`, or a noisy dev server will never fire the quiet-timer — you'll only wake on state changes (takeover, exit) and miss everything in between.
+
 ### Querying Status
 ```typescript
 interactive_shell({ sessionId: "calm-reef" })
 ```
 
 Returns:
-- `status`: "running" | "user-takeover" | "exited" | "killed" | "backgrounded"
+- `status`: "running" | "monitoring" | "user-takeover" | "exited" | "killed" | "backgrounded"
 - `output`: Last 20 lines of rendered terminal (clean, no TUI animation noise)
 - `runtime`: Time elapsed in ms
 
@@ -257,6 +317,29 @@ interactive_shell({ sessionId: "calm-reef", outputLines: 50, incremental: true }
 
 The server tracks your read position - just keep calling with `incremental: true` to get the next chunk.
 
+### Tailing Live-Updating TUIs
+
+For TUIs where content appends below the viewport (transcript viewers, paged log tails, chat UIs), the view often does **not** auto-follow new content — you'll keep reading the same stale top-of-buffer across wake-ups unless you actively jump to the bottom each time.
+
+Pattern:
+
+```typescript
+// 1. Interval wake-ups so you get woken regardless of output activity
+interactive_shell({
+  command: 'tail-claude',
+  mode: "hands-free",
+  handsFree: { updateMode: "interval", updateInterval: 30000 }
+})
+
+// 2. On each wake-up, send the TUI's "jump to bottom" key, THEN poll
+interactive_shell({ sessionId: "calm-reef", input: "G" })  // vim/less: G
+interactive_shell({ sessionId: "calm-reef", outputLines: 60 })
+```
+
+Common "jump to bottom" bindings: `G` (vim/less/most TUIs), `End`, `Shift+G`. Check the TUI's help (`?` usually shows the keymap).
+
+If the target is plain line-streamed output (no pager), prefer `mode: "monitor"` with a regex trigger — you get woken on pattern match instead of polling blindly.
+
 ### Reviewing Output
 
 Query sessions to see progress. Increase limits when you need more context:
@@ -274,7 +357,13 @@ interactive_shell({ sessionId: "calm-reef", outputLines: 100, outputMaxChars: 30
 
 ## Sending Input to Active Sessions
 
-Use the `sessionId` from updates to send input to a running hands-free session:
+Use the `sessionId` from updates to send input to a running hands-free session.
+
+**Choosing `input` vs `inputKeys`:**
+- **`input`**: plain typed characters — strings the user would type (`"G"`, `"hello"`, `"/help"`, `"SELECT * FROM users;"`).
+- **`inputKeys`**: named keys and modifier combos only (`"up"`, `"enter"`, `"ctrl+c"`, `"shift+tab"`, `"f5"`).
+- **Do not** use `inputKeys: ["G"]` to send a capital G. `inputKeys` is parsed as named-key tokens — plain letters may be silently dropped or reinterpreted. Letter characters belong in `input`.
+- `submit: true` appends Enter after `input`. Omit it when sending a single keystroke that should not be submitted (e.g. a TUI hotkey like `G`).
 
 ### Basic Input
 ```typescript
@@ -478,6 +567,49 @@ interactive_shell({ dismissBackground: true })               // all
 interactive_shell({ dismissBackground: "calm-reef" })        // specific
 ```
 
+**Gotcha: backgrounded sessions require `attach` before you can poll or send input.** Direct calls like `interactive_shell({ sessionId })`, `{ sessionId, input }`, or `{ sessionId, kill: true }` return `Session not found or no longer active` even though the process is still running. Use `listBackground: true` to confirm it exists, then `attach: sessionId` in any mode to make it addressable again. `dismissBackground: sessionId` is the only session-scoped call that works without attaching first.
+
+```typescript
+// Start an event-driven monitor session (headless)
+interactive_shell({
+  command: 'npm test --watch',
+  mode: "monitor",
+  monitor: { strategy: "stream", triggers: [{ id: "failed", literal: "FAIL" }] }
+})
+```
+
+## Local Testing Hygiene
+
+When using `interactive_shell` for one-off local testing, do **not** leave sessions running in the background unless the user explicitly wants them kept alive. A stack of background sessions in the widget usually means the agent used backgrounding as an escape hatch and never cleaned up.
+
+Best practice:
+- Prefer `kill: true` or normal process exit for finite test runs.
+- Only background a session if you expect to come back to it soon or the user asked to keep it.
+- Before ending the task, sweep background sessions created for testing.
+- Keep background sessions only for intentional long-lived work like dev servers, watchers, or manual validation the user is actively using.
+
+Typical cleanup flow:
+
+```typescript
+// Inspect what is still running
+interactive_shell({ listBackground: true })
+
+// Dismiss a specific leftover test session
+interactive_shell({ dismissBackground: "keen-cove" })
+
+// Or, if the background sessions were just temporary test artifacts from this task,
+// dismiss all of them in one sweep
+interactive_shell({ dismissBackground: true })
+```
+
+To kill all backgrounded interactive shell sessions and their processes in one sweep, use `interactive_shell({ dismissBackground: true })`.
+
+Decision rule:
+- **One-off test / repro / validation run** → kill or dismiss it when done.
+- **Dev server / watch mode / ongoing manual check** → background only if the user wants it preserved.
+
+If the user backgrounds a session manually with `Ctrl+B`, the agent should still clean it up later unless the user clearly wants it kept.
+
 ## Quick Reference
 
 **Dispatch subagent (fire-and-forget, default to pi):**
@@ -497,6 +629,20 @@ interactive_shell({
   mode: "dispatch",
   background: true,
   reason: "Fixing lint"
+})
+```
+
+**Monitor watcher (event-driven, no polling):**
+```typescript
+interactive_shell({
+  command: 'npm run dev',
+  mode: "monitor",
+  monitor: {
+    strategy: "stream",
+    triggers: [{ id: "warn", regex: "/error|warn/i" }],
+    persistence: { stopAfterFirstEvent: false }
+  },
+  reason: "Wake me on server warnings"
 })
 ```
 
