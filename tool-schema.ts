@@ -3,9 +3,14 @@ import { Type } from "@sinclair/typebox";
 export const TOOL_NAME = "interactive_shell";
 export const TOOL_LABEL = "Interactive Shell";
 
-export const TOOL_DESCRIPTION = `Run an interactive CLI in a TUI overlay the user can watch and take over.
+export const TOOL_DESCRIPTION = `Launch an interactive CLI in a TUI overlay the user can watch and take over. Pi is the caller; the CLI you launch is the subprocess.
 
-Use for: TUI-based coding agents (pi, claude, codex, gemini, aider), editors, REPLs, dev servers, watchers, and any long-running process the user should observe. Supports hands-free monitoring, fire-and-forget dispatch, and event-driven monitoring.
+Common targets to launch:
+- Subagents: claude, codex, gemini, aider (delegate a task; structured \`spawn\` supports pi/codex/claude)
+- Pi itself: fresh instance, fork, or worktree via structured \`spawn\`
+- Interactive TUIs: editors, REPLs, dev servers, watchers, log tails, any long-running process the user should observe
+
+Supports hands-free polling, fire-and-forget dispatch, and event-driven monitoring.
 
 DO NOT use for regular shell commands — use the bash tool for those.
 
