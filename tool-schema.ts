@@ -3,138 +3,19 @@ import { Type } from "@sinclair/typebox";
 export const TOOL_NAME = "interactive_shell";
 export const TOOL_LABEL = "Interactive Shell";
 
-export const TOOL_DESCRIPTION = `Run an interactive CLI coding agent in an overlay.
+export const TOOL_DESCRIPTION = `Run an interactive CLI in a TUI overlay the user can watch and take over.
 
-Use this ONLY for delegating tasks to other AI coding agents (Claude Code, Gemini CLI, Codex, etc.) that have their own TUI and benefit from user interaction.
+Use for: TUI-based coding agents (pi, claude, codex, gemini, aider), editors, REPLs, dev servers, watchers, and any long-running process the user should observe. Supports hands-free monitoring, fire-and-forget dispatch, and event-driven monitoring.
 
-DO NOT use this for regular bash commands - use the standard bash tool instead.
+DO NOT use for regular shell commands — use the bash tool for those.
 
-MODES:
-- interactive (default): User supervises and controls the session
-- hands-free: Agent monitors with periodic updates, user can take over anytime by typing
-- dispatch: Agent is notified on completion via triggerTurn (no polling needed)
-- monitor: Run in background and wake the agent on structured monitor events (stream, poll-diff, or file-watch)
+Modes:
+- interactive (default): user drives; tool blocks until exit
+- hands-free: non-blocking; agent polls sessionId for status and output
+- dispatch: non-blocking; agent notified on completion (preferred for fire-and-forget delegations)
+- monitor: non-blocking, headless; agent woken on structured triggers (stream / poll-diff / file-watch)
 
-RECOMMENDED DEFAULT FOR DELEGATED TASKS:
-- For fire-and-forget delegations and QA-style checks, prefer mode="dispatch".
-- Dispatch is the safest choice when the agent should continue immediately and be notified automatically on completion.
-
-The user will see the process in an overlay. They can:
-- Watch output in real-time
-- Scroll through output (Shift+Up/Down)
-- Transfer output to you (Ctrl+T) - closes overlay and sends output as your context
-- Background (Ctrl+B) - dismiss overlay, keep process running
-- Detach (Ctrl+Q) for menu: transfer/background/kill
-- In hands-free mode: type anything to take over control
-
-HANDS-FREE MODE (NON-BLOCKING):
-When mode="hands-free", the tool returns IMMEDIATELY with a sessionId.
-The overlay opens for the user to watch, but you (the agent) get control back right away.
-
-Workflow:
-1. Start session: interactive_shell({ command: 'pi "Fix bugs"', mode: "hands-free" })
-   -> Returns immediately with sessionId
-2. Check status/output: interactive_shell({ sessionId: "calm-reef" })
-   -> Returns current status and any new output since last check
-3. When task is done: interactive_shell({ sessionId: "calm-reef", kill: true })
-   -> Kills session and returns final output
-
-The user sees the overlay and can:
-- Watch output in real-time
-- Take over by typing (you'll see "user-takeover" status on next query)
-- Kill/background via Ctrl+Q
-
-QUERYING SESSION STATUS:
-- interactive_shell({ sessionId: "calm-reef" }) - get status + rendered terminal output (default: 20 lines, 5KB)
-- interactive_shell({ sessionId: "calm-reef", outputLines: 50 }) - get more lines (max: 200)
-- interactive_shell({ sessionId: "calm-reef", outputMaxChars: 20000 }) - get more content (max: 50KB)
-- interactive_shell({ sessionId: "calm-reef", outputOffset: 0, outputLines: 50 }) - pagination (lines 0-49)
-- interactive_shell({ sessionId: "calm-reef", incremental: true }) - get next N unseen lines (server tracks position)
-- interactive_shell({ sessionId: "calm-reef", drain: true }) - only NEW output since last query (raw stream)
-- interactive_shell({ sessionId: "calm-reef", kill: true }) - end session
-- interactive_shell({ sessionId: "calm-reef", input: "..." }) - send input
-- interactive_shell({ monitorStatus: true, monitorSessionId: "calm-reef" }) - query monitor lifecycle/state
-- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef" }) - query monitor event history
-- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorSinceEventId: 42 }) - fetch events after a cursor
-- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorTriggerId: "error" }) - filter monitor history by trigger id
-- interactive_shell({ monitorEvents: true, monitorSessionId: "calm-reef", monitorEventLimit: 50, monitorEventOffset: 20 }) - paginate monitor history
-
-IMPORTANT: Don't query too frequently! Wait 30-60 seconds between status checks.
-The user is watching the overlay in real-time - you're just checking in periodically.
-
-RATE LIMITING:
-Queries are limited to once every 60 seconds (configurable). If you query too soon,
-the tool will automatically wait until the limit expires before returning.
-
-SENDING INPUT:
-- interactive_shell({ sessionId: "calm-reef", input: "/help", submit: true }) - type text and press Enter
-- interactive_shell({ sessionId: "calm-reef", inputKeys: ["ctrl+c"] }) - named keys
-- interactive_shell({ sessionId: "calm-reef", inputKeys: ["up", "up", "enter"] }) - multiple keys
-- interactive_shell({ sessionId: "calm-reef", inputHex: ["0x1b", "0x5b", "0x41"] }) - raw escape sequences
-- interactive_shell({ sessionId: "calm-reef", inputPaste: "multiline\\ntext" }) - bracketed paste (prevents auto-execution)
-
-Named keys for inputKeys: up, down, left, right, enter, escape, tab, backspace, ctrl+c, ctrl+d, etc.
-Modifiers: ctrl+x, alt+x, shift+tab, ctrl+alt+delete (or c-x, m-x, s-tab syntax)
-For editor-based TUIs like pi, raw \`input\` only types text. It does NOT submit by itself. Prefer \`submit: true\` or \`inputKeys: ["enter"]\` instead of relying on \`\\n\`.
-
-TIMEOUT (for TUI commands that don't exit cleanly):
-Use timeout to auto-kill after N milliseconds. Useful for capturing output from commands like "pi --help":
-- interactive_shell({ command: "pi --help", mode: "hands-free", timeout: 5000 })
-
-DISPATCH MODE (NON-BLOCKING, NO POLLING):
-When mode="dispatch", the tool returns IMMEDIATELY with a sessionId.
-You do NOT need to poll. You'll be notified automatically when the session completes.
-
-Workflow:
-1. Start session: interactive_shell({ command: 'pi "Fix bugs"', mode: "dispatch" })
-   -> Returns immediately with sessionId
-2. Do other work - no polling needed
-3. When complete, you receive a notification with the session output
-
-Dispatch defaults autoExitOnQuiet to true (opt-out with handsFree.autoExitOnQuiet: false).
-You can still query with sessionId if needed, but it's not required.
-
-BACKGROUND DISPATCH (HEADLESS):
-Start a session without any overlay. Process runs headlessly, agent notified on completion:
-- interactive_shell({ command: 'pi "fix bugs"', mode: "dispatch", background: true })
-
-MONITOR MODE (EVENT-DRIVEN, HEADLESS):
-Run a background process and wake the agent on structured monitor triggers:
-- interactive_shell({ command: 'npm test --watch', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "fail", literal: "FAIL" }] } })
-- interactive_shell({ command: 'npm run dev', mode: "monitor", monitor: { strategy: "stream", triggers: [{ id: "warn", regex: "/error|warn/i" }] } })
-- interactive_shell({ command: 'curl -sf http://localhost:3000/health', mode: "monitor", monitor: { strategy: "poll-diff", triggers: [{ id: "changed", regex: "/./" }], poll: { intervalMs: 5000 } } })
-- interactive_shell({ mode: "monitor", monitor: { strategy: "file-watch", fileWatch: { path: "./uploads", recursive: true, events: ["rename", "change"] }, triggers: [{ id: "pdf", regex: "/\\.pdf$/i" }] } })
-
-AGENT-INITIATED BACKGROUND:
-Dismiss an existing overlay, keep the process running in background:
-- interactive_shell({ sessionId: "calm-reef", background: true })
-
-ATTACH (REATTACH TO BACKGROUND SESSION):
-Open an overlay for a background session:
-- interactive_shell({ attach: "calm-reef" }) - interactive (blocking)
-- interactive_shell({ attach: "calm-reef", mode: "hands-free" }) - hands-free (poll)
-- interactive_shell({ attach: "calm-reef", mode: "dispatch" }) - dispatch (non-blocking, notified)
-
-LIST BACKGROUND SESSIONS:
-- interactive_shell({ listBackground: true })
-
-DISMISS BACKGROUND SESSIONS:
-- interactive_shell({ dismissBackground: true }) - kill running, remove exited, clear all
-- interactive_shell({ dismissBackground: "calm-reef" }) - dismiss specific session
-
-When using raw \`command\`, this tool does NOT inject prompts for you.
-If you want to start with a prompt, include it in the command using the CLI's own prompt form.
-Structured \`spawn\` also supports a \`prompt\` field for Pi, Codex, and Claude using their native startup prompt forms.
-
-Examples:
-- pi "Scan the current codebase"
-- claude "Check the current directory and summarize"
-- interactive_shell({ spawn: { agent: "codex" }, mode: "dispatch" })
-- interactive_shell({ spawn: { agent: "claude", prompt: "Review the diffs" }, mode: "dispatch" })
-- interactive_shell({ spawn: { mode: "fork" } }) // pi-only fork of the current persisted session
-- gemini (interactive, idle)
-- aider --yes-always (hands-free, auto-approve)
-- pi --help (with timeout: 5000 to capture help output)`;
+Before first use in a session, read the \`interactive-shell\` skill — it covers mode selection, the hands-free polling pattern, the \`input\` vs \`inputKeys\` gotcha (plain letters go in \`input\`), TUI-tailing for redrawing displays (\`updateMode: "interval"\` + send jump-to-bottom key), monitor trigger configuration, cleanup hygiene for background sessions, and the structured \`spawn\` shorthand for pi/codex/claude.`;
 
 export const toolParameters = Type.Object({
 	command: Type.Optional(
@@ -213,7 +94,7 @@ export const toolParameters = Type.Object({
 		}),
 	),
 	input: Type.Optional(
-		Type.String({ description: "Raw text to send to the session (requires sessionId). This only types the text; it does not submit it. Use submit=true or inputKeys:['enter'] when you want to press Enter." }),
+		Type.String({ description: "Raw text to send to the session (requires sessionId). This only types the text; it does not submit it. Use submit: true or inputKeys: ['enter'] when you want to press Enter." }),
 	),
 	submit: Type.Optional(
 		Type.Boolean({ description: "Press Enter after sending any input. Prefer this when submitting slash commands or prompts to editor-based TUIs like pi. (requires sessionId)" }),
