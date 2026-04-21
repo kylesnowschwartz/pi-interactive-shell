@@ -30,7 +30,7 @@ Works with any CLI: `vim`, `htop`, `psql`, `ssh`, `docker logs -f`, `npm run dev
 pi install npm:pi-interactive-shell
 ```
 
-The `interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/interactive-shell/`.
+The `pi-interactive-shell` skill is automatically symlinked to `~/.pi/agent/skills/pi-interactive-shell/`.
 
 **Requires:** Node.js. PTY support uses `zigpty` prebuilt binaries (no `node-gyp` toolchain required on supported platforms).
 
@@ -506,12 +506,12 @@ If you want your own slash commands and local skill copies, copy the examples in
 
 ```bash
 # Prompt templates (slash commands)
-cp ~/.pi/agent/extensions/interactive-shell/examples/prompts/*.md ~/.pi/agent/prompts/
+cp ~/.pi/agent/extensions/pi-interactive-shell/examples/prompts/*.md ~/.pi/agent/prompts/
 
 # Skills used by the templates
-cp -r ~/.pi/agent/extensions/interactive-shell/examples/skills/codex-cli ~/.pi/agent/skills/
-cp -r ~/.pi/agent/extensions/interactive-shell/examples/skills/gpt-5-4-prompting ~/.pi/agent/skills/
-cp -r ~/.pi/agent/extensions/interactive-shell/examples/skills/codex-5-3-prompting ~/.pi/agent/skills/
+cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/codex-cli ~/.pi/agent/skills/
+cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/gpt-5-4-prompting ~/.pi/agent/skills/
+cp -r ~/.pi/agent/extensions/pi-interactive-shell/examples/skills/codex-5-3-prompting ~/.pi/agent/skills/
 ```
 
 ### Usage

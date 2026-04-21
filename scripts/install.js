@@ -20,8 +20,8 @@ function getAgentDir() {
 }
 
 const agentDir = getAgentDir();
-const EXTENSION_DIR = join(agentDir, "extensions", "interactive-shell");
-const SKILL_DIR = join(agentDir, "skills", "interactive-shell");
+const EXTENSION_DIR = join(agentDir, "extensions", "pi-interactive-shell");
+const SKILL_DIR = join(agentDir, "skills", "pi-interactive-shell");
 
 function log(msg) {
 	console.log(`[pi-interactive-shell] ${msg}`);
@@ -103,8 +103,8 @@ function main() {
 	log("Usage:");
 	log('  interactive_shell({ command: \'pi "Fix all bugs"\', mode: "dispatch" })');
 	log("");
-	log("Bundled example prompts live under extensions/interactive-shell/examples/prompts/");
-	log("Bundled example skills live under extensions/interactive-shell/examples/skills/");
+	log("Bundled example prompts live under extensions/pi-interactive-shell/examples/prompts/");
+	log("Bundled example skills live under extensions/pi-interactive-shell/examples/skills/");
 	log("Copy them into your prompts/skills directories if you want local slash commands or skill copies.");
 	log("");
 }

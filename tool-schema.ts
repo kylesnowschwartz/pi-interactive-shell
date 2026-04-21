@@ -15,7 +15,7 @@ Modes:
 - dispatch: non-blocking; agent notified on completion (preferred for fire-and-forget delegations)
 - monitor: non-blocking, headless; agent woken on structured triggers (stream / poll-diff / file-watch)
 
-Before first use in a session, read the \`interactive-shell\` skill — it covers mode selection, the hands-free polling pattern, the \`input\` vs \`inputKeys\` gotcha (plain letters go in \`input\`), TUI-tailing for redrawing displays (\`updateMode: "interval"\` + send jump-to-bottom key), monitor trigger configuration, cleanup hygiene for background sessions, and the structured \`spawn\` shorthand for pi/codex/claude.`;
+Before first use in a session, read the \`pi-interactive-shell\` skill — it covers mode selection, the hands-free polling pattern, the \`input\` vs \`inputKeys\` gotcha (plain letters go in \`input\`), TUI-tailing for redrawing displays (\`updateMode: "interval"\` + send jump-to-bottom key), monitor trigger configuration, cleanup hygiene for background sessions, and the structured \`spawn\` shorthand for pi/codex/claude.`;
 
 export const toolParameters = Type.Object({
 	command: Type.Optional(
