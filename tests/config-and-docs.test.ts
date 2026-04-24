@@ -110,7 +110,7 @@ describe("config + docs parity", () => {
 		expect(toolSchema).toContain(`default: ${defaults.handsFreeQuietThreshold}ms`);
 		expect(toolSchema).toContain('submit: true');
 		expect(toolSchema).toContain('Type.Literal("cursor")');
-		expect(toolSchema).toContain('Structured \\`spawn\\` also supports a \\`prompt\\` field for Pi, Codex, Claude, and Cursor');
+		expect(toolSchema).toContain("Optional startup prompt for pi, codex, claude, or cursor.");
 		expect(toolSchema).toContain('This only types the text; it does not submit it.');
 		expect(toolSchema).toContain(`default: ${defaults.autoExitGracePeriod}ms`);
 
