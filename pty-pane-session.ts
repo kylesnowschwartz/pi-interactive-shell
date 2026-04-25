@@ -238,9 +238,31 @@ export class PtyPaneSession {
 			throw new Error("tmux split-window did not return a pane id");
 		}
 
+		this.enableRemainOnExit();
 		this.applyPaneMetadata(options.pane);
 		this.captureInitialPid();
 		this.startPolling();
+	}
+
+	/**
+	 * `remain-on-exit on` keeps the pane alive after its process exits,
+	 * so our final poll tick can still capture the full buffer and read
+	 * the real exit status via `#{pane_dead_status}`. Without it, the
+	 * fast-finishing fixtures finish and tmux reaps the pane between
+	 * polls — we would only ever observe partial output. The pane is
+	 * explicitly destroyed by `dispose()` / `kill()`.
+	 */
+	private enableRemainOnExit(): void {
+		try {
+			this.runner.runTmux(
+				["set-option", "-p", "-t", this._paneId, "remain-on-exit", "on"],
+				{ allowNonZeroExit: true },
+			);
+		} catch {
+			// Older tmux may not support pane-scoped set-option; we still
+			// poll correctly, just with the race window the bake-off doc
+			// records as a known limitation.
+		}
 	}
 
 	private applyPaneMetadata(pane: PaneOptions): void {
@@ -298,22 +320,50 @@ export class PtyPaneSession {
 				{ allowNonZeroExit: true },
 			);
 			if (result.exitCode !== 0) {
-				// Pane is gone. capture-pane fails with non-zero when the pane id
-				// no longer exists.
-				this.handlePaneGone();
+				// Pane no longer exists at all — externally killed or the
+				// remain-on-exit option was not honoured.
+				this.handlePaneGone(0, undefined);
 				return;
 			}
 			const captured = stripTrailingNewlines(result.stdout);
 			this.diffAndEmit(captured);
+
+			// Then ask tmux whether the pane's process has exited. With
+			// remain-on-exit on, the pane is still capturable but flagged
+			// dead; this is where we read the real exit status.
+			const status = this.queryDeadStatus();
+			if (status.dead) {
+				this.handlePaneGone(status.exitCode, status.signal);
+			}
 		} catch (err) {
 			if (err instanceof TmuxError) {
-				this.handlePaneGone();
+				this.handlePaneGone(0, undefined);
 				return;
 			}
-			// Unknown error — keep polling but surface to console; do not crash.
 			console.error("PtyPaneSession: poll tick error:", err);
 		} finally {
 			this.pollInFlight = false;
+		}
+	}
+
+	private queryDeadStatus(): { dead: boolean; exitCode: number | null; signal: number | undefined } {
+		try {
+			const result = this.runner.runTmux(
+				buildDisplayMessageArgs(this._paneId, "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"),
+				{ allowNonZeroExit: true },
+			);
+			if (result.exitCode !== 0) return { dead: true, exitCode: 0, signal: undefined };
+			const [deadStr, statusStr, signalStr] = result.stdout.trim().split("|");
+			if (deadStr !== "1") return { dead: false, exitCode: null, signal: undefined };
+			const exitCode = Number.parseInt(statusStr ?? "", 10);
+			const signal = Number.parseInt(signalStr ?? "", 10);
+			return {
+				dead: true,
+				exitCode: Number.isFinite(exitCode) ? exitCode : 0,
+				signal: Number.isFinite(signal) && signal > 0 ? signal : undefined,
+			};
+		} catch {
+			return { dead: false, exitCode: null, signal: undefined };
 		}
 	}
 
@@ -359,20 +409,20 @@ export class PtyPaneSession {
 		this.notifyDataListeners(normalized);
 	}
 
-	private handlePaneGone(): void {
+	private handlePaneGone(exitCode: number | null, signal: number | undefined): void {
 		if (this._exited || this.disposed) return;
 		this._exited = true;
-		this._exitCode = 0;
-		this._signal = undefined;
+		this._exitCode = exitCode;
+		this._signal = signal;
 		this.stopPolling();
-		const exitMsg = `\n[Process exited with code 0]\n`;
+		const exitMsg = `\n[Process exited with code ${exitCode ?? 0}${signal ? ` (signal: ${signal})` : ""}]\n`;
 		this.rawOutput += exitMsg;
 		try {
 			this.xterm.write(exitMsg);
 		} catch {
 			// Buffer may be disposed if dispose() raced; ignore.
 		}
-		this.notifyExitListeners(0, undefined);
+		this.notifyExitListeners(exitCode ?? 0, signal);
 	}
 
 	setEventHandlers(events: PtySessionEvents): void {
@@ -436,7 +486,7 @@ export class PtyPaneSession {
 			this.runner.runTmux(buildSendKeysLiteralArgs(this._paneId, data), { allowNonZeroExit: true });
 		} catch (err) {
 			if (err instanceof TmuxError) {
-				this.handlePaneGone();
+				this.handlePaneGone(0, undefined);
 				return;
 			}
 			throw err;
@@ -456,7 +506,7 @@ export class PtyPaneSession {
 			this.runner.runTmux(buildSendKeysNamedArgs(this._paneId, keys), { allowNonZeroExit: true });
 		} catch (err) {
 			if (err instanceof TmuxError) {
-				this.handlePaneGone();
+				this.handlePaneGone(0, undefined);
 				return;
 			}
 			throw err;
