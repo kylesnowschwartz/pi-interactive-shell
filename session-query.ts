@@ -1,7 +1,7 @@
 import type { InteractiveShellConfig } from "./config.js";
 import type { OutputOptions, OutputResult } from "./session-manager.js";
 import type { InteractiveShellResult } from "./types.js";
-import type { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 
 /** Mutable query bookkeeping kept per active session. */
 export interface SessionQueryState {
@@ -22,7 +22,7 @@ export function createSessionQueryState(): SessionQueryState {
 }
 
 export function getSessionOutput(
-	session: PtyTerminalSession,
+	session: PtySession,
 	config: InteractiveShellConfig,
 	state: SessionQueryState,
 	options: OutputOptions | boolean = false,
@@ -87,7 +87,7 @@ function maybeRateLimitQuery(
 }
 
 function getIncrementalOutput(
-	session: PtyTerminalSession,
+	session: PtySession,
 	state: SessionQueryState,
 	requestedLines: number,
 	requestedMaxChars: number,
@@ -109,7 +109,7 @@ function getIncrementalOutput(
 }
 
 function getOffsetOutput(
-	session: PtyTerminalSession,
+	session: PtySession,
 	offset: number,
 	requestedLines: number,
 	requestedMaxChars: number,

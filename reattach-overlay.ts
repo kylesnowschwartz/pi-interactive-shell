@@ -1,7 +1,7 @@
 import type { Component, Focusable, TUI } from "@mariozechner/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
-import { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 import { sessionManager } from "./session-manager.js";
 import type { InteractiveShellConfig } from "./config.js";
 import {
@@ -21,7 +21,7 @@ export class ReattachOverlay implements Component, Focusable {
 	private tui: TUI;
 	private theme: Theme;
 	private done: (result: InteractiveShellResult) => void;
-	private bgSession: { id: string; command: string; reason?: string; session: PtyTerminalSession };
+	private bgSession: { id: string; command: string; reason?: string; session: PtySession };
 	private config: InteractiveShellConfig;
 
 	private state: OverlayState = "running";
@@ -37,7 +37,7 @@ export class ReattachOverlay implements Component, Focusable {
 	constructor(
 		tui: TUI,
 		theme: Theme,
-		bgSession: { id: string; command: string; reason?: string; session: PtyTerminalSession },
+		bgSession: { id: string; command: string; reason?: string; session: PtySession },
 		config: InteractiveShellConfig,
 		done: (result: InteractiveShellResult) => void,
 		private onUnfocus?: () => void,
@@ -80,7 +80,7 @@ export class ReattachOverlay implements Component, Focusable {
 		bgSession.session.resize(cols, rows);
 	}
 
-	private get session(): PtyTerminalSession {
+	private get session(): PtySession {
 		return this.bgSession.session;
 	}
 

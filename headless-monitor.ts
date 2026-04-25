@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 import type { InteractiveShellConfig } from "./config.js";
 
 export interface MonitorMatchInfo {
@@ -71,7 +71,7 @@ export class HeadlessDispatchMonitor {
 	get disposed(): boolean { return this._disposed; }
 
 	constructor(
-		private session: PtyTerminalSession,
+		private session: PtySession,
 		private config: InteractiveShellConfig,
 		private options: HeadlessMonitorOptions,
 		private onComplete: (info: HeadlessCompletionInfo) => void,

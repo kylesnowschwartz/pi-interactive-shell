@@ -5,6 +5,7 @@ import xterm from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { sliceLogOutput, trimRawOutput } from "./pty-log.js";
 import { splitAroundDsr, buildCursorPositionResponse } from "./pty-protocol.js";
+import type { PtySession, PtySessionEventsShape } from "./pty-session-interface.js";
 
 const Terminal = xterm.Terminal;
 
@@ -134,7 +135,7 @@ class WriteQueue {
 	}
 }
 
-export class PtyTerminalSession {
+export class PtyTerminalSession implements PtySession {
 	private ptyProcess: IPty;
 	private xterm: XtermTerminal;
 	private serializer: SerializeAddon | null = null;

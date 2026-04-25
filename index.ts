@@ -3,6 +3,7 @@ import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
 import { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 import { formatDuration, formatDurationMs } from "./types.js";
 import type {
 	HandsFreeUpdate,
@@ -553,7 +554,7 @@ function registerHeadlessActive(
 	id: string,
 	command: string,
 	reason: string | undefined,
-	session: PtyTerminalSession,
+	session: PtySession,
 	monitor: HeadlessDispatchMonitor,
 	startTime: number,
 	config: InteractiveShellConfig,

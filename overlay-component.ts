@@ -3,6 +3,7 @@ import type { Component, Focusable, TUI } from "@mariozechner/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 import { sessionManager, generateSessionId } from "./session-manager.js";
 import type { InteractiveShellConfig } from "./config.js";
 import {
@@ -25,7 +26,7 @@ export class InteractiveShellOverlay implements Component, Focusable {
 	private tui: TUI;
 	private theme: Theme;
 	private done: (result: InteractiveShellResult) => void;
-	private session: PtyTerminalSession;
+	private session: PtySession;
 	private options: InteractiveShellOptions;
 	private config: InteractiveShellConfig;
 

@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { InteractiveShellConfig } from "./config.js";
 import type { InteractiveShellOptions, InteractiveShellResult } from "./types.js";
-import type { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 
 export function captureCompletionOutput(
-	session: PtyTerminalSession,
+	session: PtySession,
 	config: InteractiveShellConfig,
 ): InteractiveShellResult["completionOutput"] {
 	const result = session.getTailLines({
@@ -22,7 +22,7 @@ export function captureCompletionOutput(
 }
 
 export function captureTransferOutput(
-	session: PtyTerminalSession,
+	session: PtySession,
 	config: InteractiveShellConfig,
 ): InteractiveShellResult["transferred"] {
 	const result = session.getTailLines({
@@ -38,7 +38,7 @@ export function captureTransferOutput(
 }
 
 export function maybeBuildHandoffPreview(
-	session: PtyTerminalSession,
+	session: PtySession,
 	when: "exit" | "detach" | "kill" | "timeout" | "transfer",
 	config: InteractiveShellConfig,
 	overrides?: Pick<InteractiveShellOptions, "handoffPreviewEnabled" | "handoffPreviewLines" | "handoffPreviewMaxChars">,
@@ -53,7 +53,7 @@ export function maybeBuildHandoffPreview(
 }
 
 export function maybeWriteHandoffSnapshot(
-	session: PtyTerminalSession,
+	session: PtySession,
 	when: "exit" | "detach" | "kill" | "timeout" | "transfer",
 	config: InteractiveShellConfig,
 	context: { command: string; cwd?: string },

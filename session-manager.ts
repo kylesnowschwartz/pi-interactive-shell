@@ -1,11 +1,11 @@
-import { PtyTerminalSession } from "./pty-session.js";
+import type { PtySession } from "./pty-session-interface.js";
 
 export interface BackgroundSession {
 	id: string;
 	name: string;
 	command: string;
 	reason?: string;
-	session: PtyTerminalSession;
+	session: PtySession;
 	startedAt: Date;
 }
 
@@ -192,7 +192,7 @@ export class ShellSessionManager {
 		return true;
 	}
 
-	add(command: string, session: PtyTerminalSession, name?: string, reason?: string, options?: { id?: string; noAutoCleanup?: boolean; startedAt?: Date }): string {
+	add(command: string, session: PtySession, name?: string, reason?: string, options?: { id?: string; noAutoCleanup?: boolean; startedAt?: Date }): string {
 		const id = options?.id ?? generateSessionId(name);
 		if (options?.id) usedIds.add(id);
 		const entry: BackgroundSession = {
