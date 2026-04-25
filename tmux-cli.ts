@@ -166,6 +166,39 @@ export function buildResizePaneArgs(paneId: string, cols: number, rows: number):
 	return ["resize-pane", "-t", paneId, "-x", String(Math.max(1, Math.trunc(cols))), "-y", String(Math.max(1, Math.trunc(rows)))];
 }
 
+/**
+ * Build the argv for `tmux pipe-pane -O -t <paneId> <shellCommand>`.
+ *
+ * `-O` directs pane output (the default; explicit for clarity) into the
+ * supplied shell command. tmux runs the command via `sh -c`, so shell
+ * redirection like `cat > $fifoPath` works as written.
+ *
+ * Without a shell command argument, `pipe-pane` instead closes any
+ * active pipe — see `buildPipePaneCloseArgs`.
+ */
+export function buildPipePaneArgs(paneId: string, shellCommand: string): string[] {
+	return ["pipe-pane", "-O", "-t", paneId, shellCommand];
+}
+
+/** Build the argv to close any active pipe-pane on the given pane. */
+export function buildPipePaneCloseArgs(paneId: string): string[] {
+	return ["pipe-pane", "-t", paneId];
+}
+
+/**
+ * Build the argv for `tmux set-option -p -t <paneId> <option> <value>`.
+ *
+ * `-p` scopes the option to a single pane. Used for `remain-on-exit on`,
+ * which keeps the pane alive after its target process exits so we can
+ * (a) read the real exit status via `#{pane_dead_status}` and
+ * (b) drain any final bytes that arrive after the process closes its pty.
+ * The pane is later destroyed unconditionally by `dispose()` regardless
+ * of whether the process exited cleanly.
+ */
+export function buildSetPaneOptionArgs(paneId: string, option: string, value: string): string[] {
+	return ["set-option", "-p", "-t", paneId, option, value];
+}
+
 export function isInsideTmux(env: NodeJS.ProcessEnv = process.env): boolean {
 	return typeof env.TMUX === "string" && env.TMUX.length > 0;
 }
