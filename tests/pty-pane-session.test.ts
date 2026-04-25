@@ -137,6 +137,10 @@ describe("PtyPaneSession (mocked tmux)", () => {
 	let fifoPath: string;
 	let writerFd: number;
 	let runner: FakeRunner;
+	// Sessions registered here are torn down in afterEach. Without this safety
+	// net, an assertion that throws before `session.dispose()` strands the
+	// polling setInterval and the worker hangs — see option-a in the bake-off.
+	const sessions: PtyPaneSession[] = [];
 
 	beforeEach(() => {
 		tmuxBackup = process.env.TMUX;
@@ -166,14 +170,24 @@ describe("PtyPaneSession (mocked tmux)", () => {
 	});
 
 	afterEach(() => {
+		// Dispose any sessions the test created (idempotent if the test already
+		// disposed). EBADF on the test's writerFd / a missing fifo file is
+		// expected because the SUT may have torn them down first.
+		for (const s of sessions) { try { s.dispose(); } catch { /* ignore */ } }
+		sessions.length = 0;
 		try { closeSync(writerFd); } catch { /* ignore */ }
 		try { unlinkSync(fifoPath); } catch { /* ignore */ }
 		if (tmuxBackup === undefined) delete process.env.TMUX;
 		else process.env.TMUX = tmuxBackup;
 	});
 
+	function track<T extends PtyPaneSession>(s: T): T {
+		sessions.push(s);
+		return s;
+	}
+
 	function makeSession(extra: Partial<PtyPaneSessionOptions> = {}): PtyPaneSession {
-		return new PtyPaneSession({
+		return track(new PtyPaneSession({
 			command: "echo hello",
 			cwd: "/tmp",
 			cols: 80,
@@ -185,7 +199,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 			skipFifoCreate: true,
 			pollIntervalMs: 100_000, // long enough that polling never fires inside a test
 			...extra,
-		} as PtyPaneSessionOptions);
+		} as PtyPaneSessionOptions));
 	}
 
 	it("throws outside a tmux session", () => {
@@ -245,7 +259,10 @@ describe("PtyPaneSession (mocked tmux)", () => {
 		expect(received.join("")).toContain("first line");
 		expect(received.join("")).toContain("second line");
 		expect(session.getRawStream({ stripAnsi: false })).toContain("first line");
-		const tail = session.getTailLines({ lines: 5 });
+		// The xterm starts with `rows` (24) blank lines and content lands at the
+		// top, so a 5-line tail captures only the trailing blanks. Request a
+		// window large enough to span the whole buffer.
+		const tail = session.getTailLines({ lines: 30 });
 		expect(tail.lines.some((l) => l.includes("first line"))).toBe(true);
 		expect(tail.lines.some((l) => l.includes("second line"))).toBe(true);
 
@@ -272,7 +289,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 		runner.respond((args) => args[0] === "display-message" && args.includes("#{pane_width}x#{pane_height}"), "120x40\n");
 		runner.respond((args) => args[0] === "display-message" && args.some((a) => a.includes("pane_dead")), "1|7|\n");
 
-		const session = new PtyPaneSession({
+		const session = track(new PtyPaneSession({
 			command: "exit 7",
 			cwd: "/tmp",
 			pane: { layout: "right", sizePercent: 50 },
@@ -281,7 +298,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 			fifoPathOverride: fifoPath,
 			skipFifoCreate: true,
 			pollIntervalMs: 10,
-		});
+		}));
 
 		const exits: Array<{ code: number; signal?: number }> = [];
 		session.addExitListener((code, signal) => exits.push({ code, signal }));
@@ -312,7 +329,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 			return realExec(cmd, args);
 		});
 
-		const session = new PtyPaneSession({
+		const session = track(new PtyPaneSession({
 			command: "true",
 			cwd: "/tmp",
 			pane: { layout: "right", sizePercent: 50 },
@@ -321,7 +338,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 			fifoPathOverride: fifoPath,
 			skipFifoCreate: true,
 			pollIntervalMs: 5,
-		});
+		}));
 
 		const exits: number[] = [];
 		session.addExitListener((code) => exits.push(code));
@@ -348,7 +365,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 		// Open writer to keep the fifo live.
 		const wfd = openSync(fifoFile, 2);
 
-		const session = new PtyPaneSession({
+		const session = track(new PtyPaneSession({
 			command: "true",
 			cwd: "/tmp",
 			pane: { layout: "right", sizePercent: 50 },
@@ -357,7 +374,7 @@ describe("PtyPaneSession (mocked tmux)", () => {
 			fifoPathOverride: fifoFile,
 			skipFifoCreate: true,
 			pollIntervalMs: 100_000,
-		});
+		}));
 
 		// Manually rewrite the session's fifo path through reflection so we
 		// can verify cleanup without relying on the auto-generated path.

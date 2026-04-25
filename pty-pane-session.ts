@@ -694,8 +694,10 @@ export class PtyPaneSession {
 			this.ingestChunk(text);
 		});
 		stream.on("error", (error) => {
-			// Errors here usually mean the fd was closed during teardown;
-			// the polling loop will surface the exit on its next tick.
+			// EBADF is the expected race when dispose() closes the fd while a
+			// libuv read is in flight; treat it as "already closed, fine" per
+			// the bake-off teardown choice (option-a) and stay quiet.
+			if ((error as NodeJS.ErrnoException).code === "EBADF") return;
 			console.error("PtyPaneSession fifo read error:", error.message);
 		});
 	}
