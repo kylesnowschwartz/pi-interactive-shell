@@ -29,6 +29,14 @@ class StubRunner implements TmuxRunner {
 
 	runTmux(args: string[], opts?: TmuxRunOptions): TmuxResult {
 		this.calls.push({ args, opts });
+		// Skip the FIFO queue for "noise" calls the SUT may make incidentally:
+		//   - `set-option remain-on-exit` is fired once on construction so a
+		//     fast-finishing pane stays capturable until our next poll tick.
+		//   - `display-message` querying `#{pane_dead}|...` is fired after every
+		//     capture-pane to learn the real exit code.
+		// Routing these through the queue would make every test push fake responses
+		// for them; they are infrastructure, not the things tests are asserting on.
+		if (isNoiseCall(args)) return this.defaultResponse(args);
 		const next = this.queue.shift();
 		if (next) return next(args, opts);
 		return this.defaultResponse(args);
@@ -37,6 +45,12 @@ class StubRunner implements TmuxRunner {
 	findCall(predicate: (args: string[]) => boolean): { args: string[]; opts?: TmuxRunOptions } | undefined {
 		return this.calls.find((c) => predicate(c.args));
 	}
+}
+
+function isNoiseCall(args: string[]): boolean {
+	if (args[0] === "set-option") return true;
+	if (args[0] === "display-message" && args.some((a) => a.includes("pane_dead"))) return true;
+	return false;
 }
 
 const TMUX_ENV: Record<string, string | undefined> = {
