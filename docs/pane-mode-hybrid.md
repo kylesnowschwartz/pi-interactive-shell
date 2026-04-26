@@ -242,9 +242,9 @@ unit-tested independently.
 
 | Branch | Tests | Skipped | Failed | Runtime | Status |
 | --- | ---: | ---: | ---: | ---: | --- |
-| pull | 97 | 3 | 0 | 12 s | 5 blockers, 3 concerns from codex review |
+| pull | 97 | 3 | 0 | 12 s | 5 blockers, 3 concerns from codex round 1 |
 | push | 86 | 13 | 0 | n/a | integration suite force-skipped (vitest hang) |
-| **hybrid** | **122** | **0** | **0** | **30 s** | All codex blockers resolved |
+| **hybrid** | **134** | **0** | **0** | **41 s** | Round 1 + Round 2 codex findings resolved |
 
 Codex review findings against the pull bake-off, status in the
 hybrid:
@@ -270,6 +270,23 @@ hybrid:
   same-line growth, newline-only, fast-finishing, type-surface
   tests as both unit and integration cases.
 
+Codex round-2 review findings against the hybrid implementation,
+all resolved in this branch:
+
+- **NB1** (`getTailLines` empty after pane reap): fixed; falls back
+  to slicing `rawOutput` when `_exited` is true. Critical because
+  `headless-monitor.ts` and `handoff-utils.ts` both call
+  `getTailLines` post-exit for completion notifications, transfer
+  payloads, and handoff snapshots. Tested.
+- **NC1** (signal-driven teardown lost real exit code): fixed;
+  `kill(signal)` records the signal, `handleReaderExit` falls back
+  to `128 + signum` instead of bare 130 when the wrapping shell
+  can't write the sidecar (e.g. SIGKILL is untrappable). Tested.
+- **NC2** (`getViewportLines` joined soft-wrapped rows): fixed;
+  `buildCapturePaneArgs` now exposes `joinWrappedLines` (default
+  true). Viewport opts out of `-J` to preserve row shape; tail keeps
+  it for content-line semantics. Tested.
+
 ## Known limitations
 
 1. **Construction race window.** Bytes the target process emits
@@ -278,12 +295,15 @@ hybrid:
    fifo. Acceptable for long-running tools; documented for the
    instant-output edge case.
 
-2. **Viewport queries on a finished pane return empty.** The
-   hybrid drops `remain-on-exit`, so once the target process
-   exits, the pane is reaped and `capture-pane` returns nothing.
-   Exit-time output is still available via `getRawStream` /
-   `getLogSlice` (the byte stream captured everything). This is
-   the trade-off for reliable EOF-driven exit detection.
+2. **Viewport queries on a finished pane return empty.** Once the
+   target process exits, tmux reaps the pane and `capture-pane`
+   returns nothing. `getTailLines` falls back to the captured byte
+   stream (codex review NB1 fix), so completion / transfer / handoff
+   payloads still work post-exit. `getViewportLines` does NOT have a
+   fallback because viewport queries fundamentally describe the
+   visible pane, which no longer exists — callers should detect
+   `session.exited` and switch to `getTailLines` if they need
+   content from a finished session.
 
 3. **C-d and other tmux-bypassed signals.** `send-keys -l` does
    not translate certain control bytes to TTY signals; we
