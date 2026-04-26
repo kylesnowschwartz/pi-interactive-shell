@@ -3,6 +3,7 @@ import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
 import { PtyTerminalSession } from "./pty-session.js";
+import { PtyPaneSession } from "./pty-pane-session.js";
 import type { PtySession } from "./pty-session-interface.js";
 import { formatDuration, formatDurationMs } from "./types.js";
 import type {
@@ -729,9 +730,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		handoffSnapshot?: ToolParams["handoffSnapshot"];
 		timeout?: number;
 		monitor?: ToolParams["monitor"];
+		render?: "terminal" | "pane";
 		onUpdate?: (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void;
 	}): Promise<{ content: Array<{ type: "text"; text: string }>; details?: any; isError?: boolean }> => {
-		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, onUpdate } = params;
+		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, render, onUpdate } = params;
 		const allowsGeneratedCommand = mode === "monitor" && monitor?.strategy === "file-watch";
 		if (!command && !spawn && !allowsGeneratedCommand) {
 			return {
@@ -751,6 +753,26 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				content: [{ type: "text", text: "background: true requires mode='dispatch' or mode='monitor' for new sessions." }],
 				isError: true,
 			};
+		}
+
+		// `render: "pane"` is the prototype hook into PtyPaneSession (codex-
+		// reviewed hybrid). For QA scope it only supports dispatch+background;
+		// other paths involve overlays which throw on pane sessions (round-3
+		// R3-B2 guards). Refuse early with a friendly message rather than
+		// blowing up deeper.
+		if (render === "pane") {
+			if (!process.env.TMUX) {
+				return {
+					content: [{ type: "text", text: "render: 'pane' requires pi to be running inside tmux (no $TMUX env var detected). Start a tmux session first, then re-launch pi." }],
+					isError: true,
+				};
+			}
+			if (mode !== "dispatch" || !background) {
+				return {
+					content: [{ type: "text", text: "render: 'pane' is only supported with mode: 'dispatch' and background: true (other modes use the overlay UI which is not pane-aware yet). Re-invoke with both options." }],
+					isError: true,
+				};
+			}
 		}
 		if (!isMonitorMode && !(mode === "dispatch" && background)) {
 			if (!hasUI) {
@@ -842,9 +864,13 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 		if (mode === "dispatch" && background) {
 			const id = generateSessionId(name);
-			const session = new PtyTerminalSession(
-				{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
-			);
+			const session: PtySession = render === "pane"
+				? new PtyPaneSession(
+					{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines, paneTitle: name ?? id },
+				)
+				: new PtyTerminalSession(
+					{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
+				);
 
 			const startTime = Date.now();
 			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
@@ -1115,6 +1141,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				handoffSnapshot,
 				timeout,
 				monitor,
+				render,
 			} = params as ToolParams;
 
 			const hasStructuredInput = inputKeys?.length || inputHex?.length || inputPaste;
@@ -1443,6 +1470,19 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 					};
 				}
 
+				// Pane sessions are visible to the user as a sibling tmux pane;
+				// the overlay /attach path is unsafe (round-3 R3-B2: would resize
+				// the user's tmux layout, scroll controls would be no-ops).
+				// Refuse with a helpful message and put the session back.
+				if (bgSession.session.kind === "pane") {
+					sessionManager.restore(bgSession, { noAutoCleanup: Boolean(monitor && !monitor.disposed) });
+					return {
+						content: [{ type: "text", text: `Session ${attach} runs in a sibling tmux pane (render: 'pane') and is already visible to you. The /attach overlay path is not pane-aware; use tmux's own pane navigation (e.g. prefix + arrow keys, or 'tmux switch-client -t <pane>') to focus the pane directly.` }],
+						isError: true,
+					};
+				}
+
+
 				const restoreAttachSession = () => {
 					bgSession.session.setEventHandlers({});
 					sessionManager.restore(bgSession, { noAutoCleanup: Boolean(monitor && !monitor.disposed) });
@@ -1620,6 +1660,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				mode,
 				background,
 				monitor,
+				render,
 				handsFree,
 				handoffPreview,
 				handoffSnapshot,

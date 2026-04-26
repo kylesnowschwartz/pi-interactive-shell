@@ -261,6 +261,14 @@ export const toolParameters = Type.Object({
 			description: "Mode: 'interactive' (default, user controls), 'hands-free' (agent monitors, user can take over), 'dispatch' (agent notified on completion, no polling needed), or 'monitor' (headless structured event monitor with stream/poll-diff/file-watch strategies).",
 		}),
 	),
+	render: Type.Optional(
+		Type.Union([
+			Type.Literal("terminal"),
+			Type.Literal("pane"),
+		], {
+			description: "How the session's terminal is hosted. 'terminal' (default) uses an in-process xterm-headless buffer; the session's UI lives inside pi's overlay. 'pane' (PROTOTYPE) opens the command in a real sibling tmux pane next to pi \u2014 only valid with mode='dispatch' and background:true; pi must itself be running inside tmux. Pane sessions support output queries, write(), and kill() exactly like terminal sessions, but cannot be /attach'd to an overlay (the pane is already visible to the user).",
+		}),
+	),
 	monitor: Type.Optional(
 		Type.Object({
 			strategy: Type.Optional(Type.Union([
