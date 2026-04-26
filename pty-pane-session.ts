@@ -111,6 +111,13 @@ export interface PtyPaneSessionOptions {
 	 * @internal `_feedReaderBytes` accessor.
 	 */
 	skipReader?: boolean;
+	/**
+	 * Override the kill-escalation grace period in ms. After kill() sends
+	 * its signal, this timer fires dispose() if the pane hasn't exited
+	 * cleanly. Default 500 ms; tests use a much smaller value to keep the
+	 * suite fast. See PtyPaneSession.kill() for the rationale.
+	 */
+	killGraceMs?: number;
 }
 
 export interface PtyPaneSessionEvents extends PtySessionEventsShape {}
@@ -118,6 +125,7 @@ export interface PtyPaneSessionEvents extends PtySessionEventsShape {}
 const DEFAULT_FIFO_DIR_NAME = "pi-interactive-shell";
 const DEFAULT_LAYOUT: PaneOptions["layout"] = "right";
 const DEFAULT_SIZE_PERCENT = 40;
+const DEFAULT_KILL_GRACE_MS = 500;
 
 export class PtyPaneSession implements PtySession {
 	private readonly tmuxRunner: TmuxRunner;
@@ -145,6 +153,17 @@ export class PtyPaneSession implements PtySession {
 	private _lastSentSignalName: string | null = null;
 	private _lastSentSignalNum: number | null = null;
 
+	/**
+	 * Grace-period escalation timer. When kill() is called, we send the
+	 * signal but the wrapping shell traps INT/TERM/HUP and many user
+	 * commands also ignore SIGTERM. If the session hasn't exited within
+	 * `_killGraceMs` ms after kill(), the timer fires dispose() to force
+	 * the pane down via tmux kill-pane. Tracked here so we can clear it
+	 * if the session exits cleanly first (and so dispose() can clear it).
+	 */
+	private _killEscalationTimer: NodeJS.Timeout | undefined;
+	private readonly _killGraceMs: number;
+
 	private rawOutput = "";
 	private lastStreamPosition = 0;
 
@@ -160,6 +179,7 @@ export class PtyPaneSession implements PtySession {
 		this.dataHandler = events.onData;
 		this.exitHandler = events.onExit;
 		this.readerCommand = options.readerCommand ?? "cat";
+		this._killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
 		const fifoDir = options.fifoDir ?? join(tmpdir(), DEFAULT_FIFO_DIR_NAME);
 		const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -424,6 +444,11 @@ export class PtyPaneSession implements PtySession {
 		}
 
 		this._exited = true;
+		// Clear any pending kill-escalation timer; we're done.
+		if (this._killEscalationTimer) {
+			clearTimeout(this._killEscalationTimer);
+			this._killEscalationTimer = undefined;
+		}
 		this._exitCode = exitCode;
 		this._signal = undefined;
 		this.notifyExitListeners(exitCode, undefined);
@@ -758,32 +783,69 @@ export class PtyPaneSession implements PtySession {
 		this._lastSentSignalName = signal;
 		this._lastSentSignalNum = signalNameToNumber(signal);
 
+		let signalDelivered = false;
 		if (process.platform !== "win32" && this._pid) {
 			try {
 				process.kill(-this._pid, signal as NodeJS.Signals);
-				return;
+				signalDelivered = true;
 			} catch {
 				// Fall through — the process group might be gone, or we're
 				// running on a platform without negative-pid signaling.
 			}
 		}
+
 		// Fallback: ask tmux to send the signal via send-keys C-c (interrupt)
 		// when SIGINT is requested. For other signals there is no clean tmux
-		// equivalent — dispose() will kill-pane outright.
-		if (signal === "SIGINT" && this._paneId) {
+		// equivalent — the grace-period escalation below will dispose() the
+		// pane outright.
+		if (!signalDelivered && signal === "SIGINT" && this._paneId) {
 			try {
 				this.tmuxRunner.runTmux(buildSendKeysNamedArgs(this._paneId, ["C-c"]), {
 					allowNonZeroExit: true,
 				});
+				signalDelivered = true;
 			} catch {
 				// Best-effort.
 			}
+		}
+
+		// Grace-period escalation: kill() must be authoritative. The wrapping
+		// shell traps and ignores INT/TERM/HUP so user signal handlers run in
+		// the subshell; many user commands (interactive bash, certain agents)
+		// also ignore SIGTERM. If the signal didn't trigger a clean exit
+		// within the grace window, force dispose() (which kill-panes the
+		// pane and reaps the cat reader). handleReaderExit picks up the
+		// recorded signal for the 128+signum fallback exit code.
+		//
+		// 500ms is enough for one-shot SIGTERM handlers to flush + write
+		// the sidecar; longer-running cleanup paths should explicitly call
+		// dispose() instead of relying on this escalation.
+		if (!this._killEscalationTimer) {
+			this._killEscalationTimer = setTimeout(() => {
+				this._killEscalationTimer = undefined;
+				if (this._exited || this.disposed) return;
+				// Run the normal exit path FIRST so listeners get the exit
+				// notification with the signal-aware fallback code (e.g. 143 for
+				// SIGTERM). dispose() afterwards sets `disposed` which would
+				// otherwise short-circuit handleReaderExit when cat closes.
+				this.handleReaderExit();
+				this.dispose();
+			}, this._killGraceMs);
+			// Don't keep the event loop alive solely for kill escalation.
+			this._killEscalationTimer.unref?.();
 		}
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+
+		// Clear any pending kill-escalation timer — dispose is the terminal
+		// state, no further escalation needed.
+		if (this._killEscalationTimer) {
+			clearTimeout(this._killEscalationTimer);
+			this._killEscalationTimer = undefined;
+		}
 
 		// SIGKILL the cat reader before tearing down the pane so the parent's
 		// stream pipe closes cleanly and vitest workers can finalize.

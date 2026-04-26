@@ -647,3 +647,60 @@ describeIfTmux("close-event drain ordering (codex round-3 R3-B1a)", () => {
 		expect(tailAtExit).toEqual(["FINAL_LINE"]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// QA-found: kill() must escalate to dispose() when signals are ignored
+// ---------------------------------------------------------------------------
+
+describeIfTmux("kill grace-period escalation (QA regression)", () => {
+	it("kill() of a SIGTERM-ignoring command escalates to dispose() and the pane exits", async () => {
+		// The wrapping shell traps INT/TERM/HUP (so user signal handlers run
+		// in the subshell). When the user's command ALSO ignores SIGTERM
+		// (e.g. interactive bash, or this trap-and-sleep), the signal is a
+		// no-op and the pane would otherwise stay alive forever. The grace-
+		// period escalation in kill() catches this and force-disposes.
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{
+					command: 'trap "" TERM; while true; do sleep 1; done',
+					tmuxRunner: runner,
+					killGraceMs: 200,
+				},
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+
+		// Give the pane a moment to start, then kill it.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		session.kill("SIGTERM");
+
+		// SIGTERM is ignored by the user's command, so without the grace-
+		// period escalation this would hang forever. With it, dispose() fires
+		// after 200ms and the session exits.
+		await waitFor(() => exitCode !== undefined, 3000);
+		expect(exitCode).toBeDefined();
+	});
+
+	it("kill() of a one-shot SIGTERM handler exits cleanly via sidecar (no escalation needed)", async () => {
+		// Sanity check: the grace-period escalation doesn't break the
+		// graceful path. A command that exits on SIGTERM should still report
+		// 143 via the sidecar, with the timer cleared by handleReaderExit
+		// before it can fire.
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{
+					command: 'sleep 30',
+					tmuxRunner: runner,
+					killGraceMs: 5000, // long, to prove escalation didn't fire
+				},
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		session.kill("SIGTERM");
+		await waitFor(() => exitCode !== undefined, 3000);
+		expect(exitCode).toBe(143);
+	});
+});
