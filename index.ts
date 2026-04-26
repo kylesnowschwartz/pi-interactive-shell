@@ -593,6 +593,50 @@ function registerHeadlessActive(
 	});
 }
 
+/**
+ * Register a pinned-render session in the active pool so the agent's
+ * tool surface (interactive_shell({ sessionId, kill, ... })) can find it.
+ *
+ * Like registerHeadlessActive but WITHOUT a HeadlessDispatchMonitor. Pinned
+ * sessions are non-blocking widgets, not dispatched headless runs; there's
+ * no monitor to drive completion notifications. The session manager still
+ * needs a registered ActiveSession entry so getOutput / kill / write resolve.
+ */
+function registerPinnedActive(
+	id: string,
+	command: string,
+	reason: string | undefined,
+	session: PtyTerminalSession,
+	startTime: number,
+	config: InteractiveShellConfig,
+): void {
+	const queryState = createSessionQueryState();
+	sessionManager.registerActive({
+		id,
+		command,
+		reason,
+		write: (data) => session.write(data),
+		kill: () => {
+			session.kill();
+			sessionManager.remove(id);
+			sessionManager.unregisterActive(id, true);
+		},
+		background: () => {},
+		getOutput: (opts) => getSessionOutput(session, config, queryState, opts, undefined),
+		getStatus: () => (session.exited ? "exited" : "running"),
+		getRuntime: () => Date.now() - startTime,
+		getResult: () => undefined,
+		onComplete: (cb) => {
+			// No monitor; wire directly to the session's exit listener.
+			// ActiveSession's onComplete callback is no-arg — it just signals
+			// completion. Pi reads getResult() afterward for details (we
+			// return undefined since we don't track full results for pinned).
+			session.addExitListener(() => cb());
+		},
+	});
+}
+
+
 function makeNonBlockingUpdateHandler(pi: ExtensionAPI): (update: HandsFreeUpdate) => void {
 	return (update) => {
 		pi.events.emit("interactive-shell:update", update);
@@ -960,6 +1004,11 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			);
 			const startTime = Date.now();
 			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
+			// Also register in the active pool so the agent's tool surface
+			// (interactive_shell({ sessionId, kill, ... })) resolves to this
+			// session. Without this, querying or killing a pinned session
+			// from the agent fails with 'Session not found or no longer active'.
+			registerPinnedActive(id, effectiveCommand, effectiveReason, session, startTime, config);
 
 			const widget = setupPinnedWidget({
 				sessionId: id,

@@ -63,7 +63,12 @@ const DEFAULT_CONFIG: InteractiveShellConfig = {
 	exitAutoCloseDelay: 10,
 	overlayWidthPercent: 95,
 	overlayHeightPercent: 60,
-	focusShortcut: "alt+shift+f",
+	// Ctrl+] is universally reliable across terminals (no Alt-as-Meta
+	// terminal config required). Old default was alt+shift+f which
+	// produces literal special characters on macOS terminals that don't
+	// have Option-as-Meta enabled (e.g. Ï on US-keyboard layouts). Users
+	// who prefer alt+shift+f can override via config.
+	focusShortcut: "ctrl+]",
 	spawn: DEFAULT_SPAWN_CONFIG,
 	scrollbackLines: 5000,
 	ansiReemit: true,

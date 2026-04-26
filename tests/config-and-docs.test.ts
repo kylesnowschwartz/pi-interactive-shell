@@ -55,7 +55,7 @@ describe("config + docs parity", () => {
 		expect(config.overlayWidthPercent).toBe(10);
 		expect(config.autoExitGracePeriod).toBe(5000);
 		expect(config.overlayHeightPercent).toBe(90);
-		expect(config.focusShortcut).toBe("alt+shift+f");
+		expect(config.focusShortcut).toBe("ctrl+]");
 		expect(config.spawn.defaultAgent).toBe("claude");
 		expect(config.spawn.shortcut).toBe("alt+shift+p");
 		expect(config.spawn.commands.codex).toBe("/opt/codex/bin/codex");
@@ -79,7 +79,7 @@ describe("config + docs parity", () => {
 
 		expect(defaults.handsFreeQuietThreshold).toBe(8000);
 		expect(defaults.autoExitGracePeriod).toBe(15000);
-		expect(defaults.focusShortcut).toBe("alt+shift+f");
+		expect(defaults.focusShortcut).toBe("ctrl+]");
 		expect(defaults.spawn.defaultAgent).toBe("pi");
 		expect(defaults.spawn.shortcut).toBe("alt+shift+p");
 		expect(defaults.spawn.defaultArgs.cursor).toEqual(["--model", "composer-2-fast"]);

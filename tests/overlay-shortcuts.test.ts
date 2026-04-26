@@ -23,7 +23,7 @@ async function setupHarness(): Promise<Harness> {
 		isKeyRelease: (data: string) => data === "RELEASE",
 		isKeyRepeat: (data: string) => data === "REPEAT",
 		matchesKey: (data: string, key: string) => {
-			if (data === "FOCUS") return key === "alt+shift+f";
+			if (data === "FOCUS") return key === "ctrl+]";
 			if (data === "SIDE") return key === "alt+/";
 			return false;
 		},

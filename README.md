@@ -387,7 +387,7 @@ Quoted prompt text plus `--hands-free` or `--dispatch` turns `/spawn` into a mon
 | Ctrl+B | Background session (dismiss overlay, keep running) |
 | Ctrl+Q | Session menu (transfer/background/kill/cancel) |
 | Shift+Up/Down | Scroll history |
-| Alt+Shift+F (default) | Toggle focus between overlay and main chat (`focusShortcut`) |
+| Ctrl+] (default) | Toggle focus between overlay and main chat (`focusShortcut`) |
 | Ctrl+G | Return to agent monitoring (only after taking over a monitored hands-free or dispatch session) |
 | Alt+Shift+P (default) | Launch the configured default spawn agent (`spawn.shortcut`) |
 | Any key (hands-free) | Take over control |
@@ -404,7 +404,7 @@ Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawn
 {
   "overlayWidthPercent": 95,
   "overlayHeightPercent": 60,
-  "focusShortcut": "alt+shift+f",
+  "focusShortcut": "ctrl+]",
   "spawn": {
     "defaultAgent": "pi",
     "shortcut": "alt+shift+p",
@@ -448,7 +448,7 @@ Shortcut settings are pinned at startup. If you change `focusShortcut` or `spawn
 |---------|---------|-------------|
 | `overlayWidthPercent` | 95 | Overlay width (10-100%) |
 | `overlayHeightPercent` | 60 | Overlay height (20-90%) |
-| `focusShortcut` | "alt+shift+f" | Toggle focus between overlay and main chat |
+| `focusShortcut` | "ctrl+]" | Toggle focus between overlay and main chat |
 | `spawn.defaultAgent` | "pi" | Configured default spawn agent for `/spawn`, the spawn shortcut, and agent-side structured spawn |
 | `spawn.shortcut` | "alt+shift+p" | Keyboard shortcut that launches the configured default spawn agent |
 | `spawn.commands.<agent>` | `pi` / `codex` / `claude` / `agent` (cursor) | Executable or path override per spawn agent |

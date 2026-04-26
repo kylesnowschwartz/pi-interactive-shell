@@ -266,7 +266,7 @@ export const toolParameters = Type.Object({
 			Type.Literal("overlay"),
 			Type.Literal("pinned"),
 		], {
-			description: "How the session's UI is rendered. 'overlay' (default) opens a modal overlay covering the chat \u2014 best for full-screen TUI agents (vim, claude, lazygit). 'pinned' shows the agent's recent output as a persistent widget above the chat editor (auto-sized, capped at 50% of terminal height); pi chat stays fully interactive while the agent runs. Press the configured focusShortcut (default Alt+Shift+F) to pop out into the overlay for direct interaction with the agent (typing, full TUI rendering); close the overlay to return to pinned view. Agent-side tool surface (output queries, write, kill, monitor triggers) is identical for both render modes.",
+			description: "How the session's UI is rendered. 'overlay' (default) opens a modal overlay covering the chat \u2014 best for full-screen TUI agents (vim, claude, lazygit). 'pinned' shows the agent's recent output as a persistent widget above the chat editor (auto-sized, capped at 50% of terminal height); pi chat stays fully interactive while the agent runs. Press the configured focusShortcut (default Ctrl+]) to pop out into the overlay for direct interaction with the agent (typing, full TUI rendering); close the overlay to return to pinned view. Agent-side tool surface (output queries, write, kill, monitor triggers) is identical for both render modes.",
 		}),
 	),
 	monitor: Type.Optional(
