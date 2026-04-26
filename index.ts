@@ -773,6 +773,12 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			);
 		} finally {
 			coordinator.endOverlay();
+			// Clear the overlay's setEventHandlers binding on the session so
+			// stale references to the (now-disposed) overlay don't fire on
+			// later data/exit events. Mirrors the existing /attach close path.
+			// Our widget uses addDataListener/addExitListener (additive), so
+			// those keep working independently.
+			record.session.setEventHandlers({});
 			// If the session is still alive after overlay close, the widget
 			// re-renders. If the overlay's close path killed/transferred the
 			// session, the widget will reflect that on its next render
