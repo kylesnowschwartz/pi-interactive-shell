@@ -42,7 +42,7 @@
 
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -113,6 +113,7 @@ const DEFAULT_SIZE_PERCENT = 40;
 export class PtyPaneSession implements PtySession {
 	private readonly tmuxRunner: TmuxRunner;
 	private readonly fifoPath: string;
+	private readonly exitFilePath: string;
 	private readonly readerCommand: string;
 	private readerChild: ChildProcess | null = null;
 
@@ -142,19 +143,252 @@ export class PtyPaneSession implements PtySession {
 		this.readerCommand = options.readerCommand ?? "cat";
 
 		const fifoDir = options.fifoDir ?? join(tmpdir(), DEFAULT_FIFO_DIR_NAME);
-		this.fifoPath =
-			options.fifoPathOverride ??
-			join(fifoDir, `pane-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.fifo`);
+		const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+		this.fifoPath = options.fifoPathOverride ?? join(fifoDir, `pane-${suffix}.fifo`);
+		this.exitFilePath = join(fifoDir, `pane-${suffix}.exit`);
 
 		if (!options.skipMkfifo) {
 			this.ensureFifoDir(fifoDir);
 			this.makeFifo(this.fifoPath);
 		}
 
-		// Phase 3 will fill in: spawn child reader, split-window, set remain-on-exit, pipe-pane.
-		// For now this skeleton just establishes the constructor signature and field shape.
-		void options.command; // silence TS unused-var warning until Phase 3 wires construction
+		// Lifecycle order is what makes the hybrid actually work. Three
+		// design decisions are baked in here — see the architecture comment
+		// at the top of this file for the full rationale, but in short:
+		//
+		//  - Reader child is spawned BEFORE pipe-pane so tmux never blocks
+		//    on its fifo write.
+		//
+		//  - The user command is wrapped to write its exit code to a
+		//    sidecar file. We DROPPED `remain-on-exit on` because it keeps
+		//    pipe-pane's writer alive after the target process exits, which
+		//    starves our cat reader of the EOF that triggers exit detection.
+		//    The sidecar approach gives us a reliable exit-code source
+		//    without keeping the pane alive after exit.
+		//
+		//  - Race window between split-window returning and pipe-pane
+		//    being enabled is documented as a known limitation (~30-100ms).
+		try {
+			this.spawnReader();
+			this._paneId = this.createPane(options);
+			this.captureInitialPid();
+			this.applyPaneMetadata(options.pane ?? {});
+			this.enablePipePane();
+		} catch (err) {
+			this.rollbackConstruction();
+			throw err;
+		}
 	}
+
+	// --- construction steps ----------------------------------------------
+
+	private spawnReader(): void {
+		// Run the reader as a child process so its blocking fifo open is
+		// confined to the child. The parent reads from the child's stdout,
+		// which is a standard libuv pipe — no thread strand on shutdown.
+		const child = spawnChild(this.readerCommand, [this.fifoPath], {
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		this.readerChild = child;
+
+		child.stdout?.setEncoding("utf8");
+		child.stdout?.on("data", (chunk: string) => this.handleBytes(chunk));
+
+		// stderr from `cat` would only appear on real error (e.g. fifo gone).
+		// Surface but don't fail — dispose() will be triggered by exit anyway.
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (msg: string) => {
+			if (msg.trim()) console.error(`[pty-pane-session] reader stderr: ${msg.trim()}`);
+		});
+
+		child.on("exit", () => this.handleReaderExit());
+		child.on("error", (err) => {
+			console.error(`[pty-pane-session] reader spawn error: ${err.message}`);
+		});
+	}
+
+	private createPane(options: PtyPaneSessionOptions): string {
+		const pane = options.pane ?? {};
+		const envSnapshot = this.buildPaneEnv(options.env);
+		// Wrap the user command so the shell writes its exit code to a sidecar
+		// file before terminating. Three design points:
+		//   - `( ... )` subshell isolates the user's `exit N` so it doesn't
+		//     short-circuit the wrapping shell.
+		//   - The wrapping shell ignores INT/TERM/HUP. Signals we deliver via
+		//     `kill -INT $-pgid` propagate to the subshell, where any user
+		//     trap fires normally; the wrapping shell continues executing past
+		//     the subshell and reliably writes the exit code.
+		//   - `trap ... EXIT` is a belt-and-braces fallback: if a future code
+		//     path adds a way for the wrapping shell to bail out before the
+		//     trailing printf, the EXIT trap still captures the last `$?`.
+		const exitFile = this.shellQuotePath(this.exitFilePath);
+		const wrappedCommand = [
+			`trap '' INT TERM HUP`,
+			`trap 'printf "%d" "$?" > ${exitFile}' EXIT`,
+			`( ${options.command} )`,
+		].join("; ");
+		const splitArgs = buildSplitWindowArgs({
+			layout: pane.layout ?? DEFAULT_LAYOUT,
+			sizePercent: pane.sizePercent ?? DEFAULT_SIZE_PERCENT,
+			cwd: options.cwd,
+			env: envSnapshot,
+			shell: options.shell ?? this.defaultShell(),
+			command: wrappedCommand,
+		});
+		const result = this.tmuxRunner.runTmux(splitArgs);
+		const paneId = result.stdout.trim();
+		if (!paneId) {
+			throw new Error("tmux split-window returned no pane id");
+		}
+		return paneId;
+	}
+
+	private captureInitialPid(): void {
+		try {
+			const result = this.tmuxRunner.runTmux(
+				buildDisplayMessageArgs(this._paneId, "#{pane_pid}"),
+				{ allowNonZeroExit: true },
+			);
+			const pid = Number.parseInt(result.stdout.trim(), 10);
+			if (Number.isFinite(pid) && pid > 0) {
+				this._pid = pid;
+			}
+		} catch {
+			// Pid is informational; the pane is already running.
+		}
+	}
+
+	private applyPaneMetadata(pane: PaneOptions): void {
+		try {
+			if (pane.title !== undefined) {
+				const args = buildSelectPaneArgs(this._paneId, { title: pane.title });
+				this.tmuxRunner.runTmux(args, { allowNonZeroExit: true });
+			}
+			if (pane.select) {
+				this.tmuxRunner.runTmux(["select-pane", "-t", this._paneId], {
+					allowNonZeroExit: true,
+				});
+			}
+		} catch {
+			// Cosmetic; never fail construction over a title.
+		}
+	}
+
+	// (remain-on-exit removed: it kept pipe-pane's writer alive past target
+	// process exit, starving our cat reader of the EOF that triggers our
+	// exit detection. The wrapped-command exit file replaces the role
+	// remain-on-exit + #{pane_dead_status} would have played for exit code.)
+
+	private enablePipePane(): void {
+		// pipe-pane runs the shell command via /bin/sh -c, so shell
+		// redirection works. We control the fifo path so it has no shell
+		// metacharacters to worry about.
+		const shellCommand = `cat > ${this.shellQuotePath(this.fifoPath)}`;
+		this.tmuxRunner.runTmux(buildPipePaneArgs(this._paneId, shellCommand));
+	}
+
+	private rollbackConstruction(): void {
+		// Best-effort cleanup of partial construction. dispose() handles the
+		// fully-constructed teardown path; this is for failures during init.
+		if (this.readerChild) {
+			try {
+				this.readerChild.kill("SIGKILL");
+			} catch {
+				// Ignore.
+			}
+			this.readerChild = null;
+		}
+		if (this._paneId) {
+			try {
+				this.tmuxRunner.runTmux(buildKillPaneArgs(this._paneId), {
+					allowNonZeroExit: true,
+				});
+			} catch {
+				// Ignore.
+			}
+		}
+		try {
+			unlinkSync(this.fifoPath);
+		} catch {
+			// Ignore.
+		}
+		try {
+			unlinkSync(this.exitFilePath);
+		} catch {
+			// Ignore.
+		}
+	}
+
+	private buildPaneEnv(callerEnv: Record<string, string | undefined> | undefined): Record<string, string> {
+		// Match PtyTerminalSession's env semantics (codex review C2):
+		// inherit process.env then layer caller-supplied overrides.
+		// Filter out tmux-leakage vars so the pane process doesn't see
+		// our parent server's TMUX context.
+		const merged: Record<string, string> = {};
+		const raw = callerEnv ? { ...process.env, ...callerEnv } : { ...process.env };
+		if (!raw.TERM) raw.TERM = "xterm-256color";
+		for (const [key, value] of Object.entries(raw)) {
+			if (value === undefined) continue;
+			if (key === "TMUX" || key === "TMUX_PANE") continue;
+			merged[key] = value;
+		}
+		return merged;
+	}
+
+	private defaultShell(): string {
+		if (process.platform === "win32") {
+			return process.env.COMSPEC || "cmd.exe";
+		}
+		return process.env.SHELL || "/bin/sh";
+	}
+
+	private shellQuotePath(path: string): string {
+		// Single-quote and escape any embedded single quotes for sh -c safety.
+		// Belt + braces — fifoPath is generated by us, but shell-quoting it
+		// is the right discipline regardless.
+		return `'${path.replace(/'/g, "'\\''")}'`;
+	}
+
+	// --- byte-flow + exit handling --------------------------------------
+
+	private handleBytes(chunk: string): void {
+		if (this.disposed) return;
+		this.rawOutput += chunk;
+		this.notifyDataListeners(chunk);
+	}
+
+	private handleReaderExit(): void {
+		// The cat reader exited. Either:
+		//   (a) the target process exited → wrapping shell wrote the exit
+		//       file → wrapping shell exited → tmux pty closed → pipe-pane
+		//       drained → cat saw EOF → we are here.
+		//   (b) dispose() SIGKILL'd cat for orderly teardown.
+		//   (c) cat itself crashed (rare; e.g. fifo unlinked under it).
+		//
+		// In case (a) the exit file exists with the real exit code. In (b)
+		// the file may not exist yet because dispose ran before the wrapping
+		// shell wrote it; we synthesize 130 (SIGINT-equivalent) so callers
+		// can distinguish. In (c) we also fall through to synthetic.
+		if (this.disposed) return;
+		if (this._exited) return;
+
+		let exitCode = 130; // synthetic default for case (b)/(c)
+		try {
+			const raw = readFileSync(this.exitFilePath, "utf8").trim();
+			const parsed = Number.parseInt(raw, 10);
+			if (Number.isFinite(parsed)) {
+				exitCode = parsed;
+			}
+		} catch {
+			// File missing or unreadable — keep synthetic default.
+		}
+
+		this._exited = true;
+		this._exitCode = exitCode;
+		this._signal = undefined;
+		this.notifyExitListeners(exitCode, undefined);
+	}
+
 
 	// --- private helpers -------------------------------------------------
 
@@ -298,9 +532,32 @@ export class PtyPaneSession implements PtySession {
 
 	// --- PtySession termination ------------------------------------------
 
-	kill(_signal: string = "SIGTERM"): void {
-		// Phase 3 will send the signal to the pane process via tmux.
-		// For now no-op; dispose() handles teardown.
+	kill(signal: string = "SIGTERM"): void {
+		// Send a real signal to the pane's foreground process group.
+		// We use the captured _pid (the shell tmux spawned for the pane);
+		// the pane process group head will be that pid.
+		if (this._exited || this.disposed) return;
+		if (process.platform !== "win32" && this._pid) {
+			try {
+				process.kill(-this._pid, signal as NodeJS.Signals);
+				return;
+			} catch {
+				// Fall through — the process group might be gone, or we're
+				// running on a platform without negative-pid signaling.
+			}
+		}
+		// Fallback: ask tmux to send the signal via send-keys C-c (interrupt)
+		// when SIGINT is requested. For other signals there is no clean tmux
+		// equivalent — dispose() will kill-pane outright.
+		if (signal === "SIGINT" && this._paneId) {
+			try {
+				this.tmuxRunner.runTmux(buildSendKeysNamedArgs(this._paneId, ["C-c"]), {
+					allowNonZeroExit: true,
+				});
+			} catch {
+				// Best-effort.
+			}
+		}
 	}
 
 	dispose(): void {
@@ -338,11 +595,17 @@ export class PtyPaneSession implements PtySession {
 		this.dataHandler = undefined;
 		this.exitHandler = undefined;
 
-		// Clean up the fifo file. Failure is fine — /tmp gets reaped anyway.
+		// Clean up the fifo and exit-code sidecar files. Failure is fine —
+		// /tmp gets reaped anyway.
 		try {
 			unlinkSync(this.fifoPath);
 		} catch {
 			// Already gone, never created, or no permission.
+		}
+		try {
+			unlinkSync(this.exitFilePath);
+		} catch {
+			// Already gone or never written.
 		}
 	}
 
@@ -359,13 +622,5 @@ export class PtyPaneSession implements PtySession {
 	}
 }
 
-// Silence TS "imported but unused" warnings for builders that fill in over Phases 3-6.
-void buildSplitWindowArgs;
-void buildSetPaneOptionArgs;
-void buildPipePaneArgs;
-void buildSelectPaneArgs;
-void buildSendKeysLiteralArgs;
-void buildSendKeysNamedArgs;
-void buildCapturePaneArgs;
-void buildDisplayMessageArgs;
-void spawnChild;
+// All builders are now used by the lifecycle implementation; viewport (Phase 5)
+// and send-keys (Phase 6) will reach the remaining ones.
