@@ -47,10 +47,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { sliceLogOutput, trimRawOutput } from "./pty-log.js";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
 	buildCapturePaneArgs,
 	buildKillPaneArgs,
