@@ -108,6 +108,13 @@ export interface PtyPaneSessionOptions {
 	fifoPathOverride?: string;
 	/** Override the reader command (for tests). Defaults to `cat`. */
 	readerCommand?: string;
+	/**
+	 * Skip spawning the reader child entirely (for unit tests that mock
+	 * tmux and don't want a live fifo handle). With this set, the SUT
+	 * will never see real bytes; tests can drive byte flow via the
+	 * @internal `_feedReaderBytes` accessor.
+	 */
+	skipReader?: boolean;
 }
 
 export interface PtyPaneSessionEvents extends PtySessionEventsShape {}
@@ -175,7 +182,7 @@ export class PtyPaneSession implements PtySession {
 		//  - Race window between split-window returning and pipe-pane
 		//    being enabled is documented as a known limitation (~30-100ms).
 		try {
-			this.spawnReader();
+			if (!options.skipReader) this.spawnReader();
 			this._paneId = this.createPane(options);
 			this.captureInitialPid();
 			this.applyPaneMetadata(options.pane ?? {});
@@ -571,6 +578,14 @@ export class PtyPaneSession implements PtySession {
 				{ allowNonZeroExit: true },
 			);
 			allLines = this.normalizeCaptureOutput(result.stdout, undefined);
+			// Trim trailing empty rows. tmux capture-pane returns the entire
+			// pane buffer including unfilled rows below the cursor (default
+			// pane is 24 rows wide). For getTailLines the contract is
+			// 'last N content lines', so drop the trailing padding. We keep
+			// internal empty lines — only TRAILING ones are padding.
+			while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+				allLines.pop();
+			}
 		} catch {
 			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
 		}
@@ -724,6 +739,23 @@ export class PtyPaneSession implements PtySession {
 	/** @internal Used by integration tests to verify fifo path. */
 	get fifoPathForTesting(): string {
 		return this.fifoPath;
+	}
+
+	/**
+	 * @internal Drive byte flow into the SUT without an actual fifo.
+	 * Only valid in tests that set `skipReader: true`. Mirrors what
+	 * the cat reader's stdout 'data' handler would have called.
+	 */
+	_feedReaderBytes(chunk: string): void {
+		this.handleBytes(chunk);
+	}
+
+	/**
+	 * @internal Synthesize the reader-exit event for tests that set
+	 * `skipReader: true`. Reads the exit-file sidecar if present.
+	 */
+	_simulateReaderExit(): void {
+		this.handleReaderExit();
 	}
 }
 
