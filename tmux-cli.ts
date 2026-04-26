@@ -130,8 +130,28 @@ function clampPercent(n: number): number {
 	return clamped;
 }
 
-export function buildCapturePaneArgs(paneId: string): string[] {
-	return ["capture-pane", "-p", "-e", "-J", "-t", paneId, "-S", "-", "-E", "-"];
+export interface CapturePaneOptions {
+	/** Include ANSI escape sequences (default true). */
+	ansi?: boolean;
+	/** Include scrollback history (default false — visible viewport only). */
+	includeHistory?: boolean;
+	/**
+	 * Override the start line. tmux conventions: '-' = top of history,
+	 * 0 = top of visible viewport, negative N = N lines back from viewport.
+	 * Takes precedence over `includeHistory`.
+	 */
+	startLine?: string;
+}
+
+export function buildCapturePaneArgs(paneId: string, options: CapturePaneOptions = {}): string[] {
+	const args: string[] = ["capture-pane", "-p", "-J", "-t", paneId];
+	if (options.ansi !== false) args.push("-e");
+	if (options.startLine !== undefined) {
+		args.push("-S", options.startLine, "-E", "-");
+	} else if (options.includeHistory) {
+		args.push("-S", "-", "-E", "-");
+	}
+	return args;
 }
 
 export function buildKillPaneArgs(paneId: string): string[] {

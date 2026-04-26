@@ -505,15 +505,81 @@ export class PtyPaneSession implements PtySession {
 
 	// --- PtySession output queries ---------------------------------------
 
-	getViewportLines(_options: ViewportLinesOptions = {}): string[] {
-		// Phase 5 will implement via capture-pane.
-		return [];
+	getViewportLines(options: ViewportLinesOptions = {}): string[] {
+		// Capture the visible pane viewport — no scrollback. tmux already
+		// rendered everything (cursor moves, line clears, ANSI styling), so
+		// the snapshot IS the viewport. No diff, no shadow buffer.
+		if (this.disposed || !this._paneId) return [];
+		try {
+			const result = this.tmuxRunner.runTmux(
+				buildCapturePaneArgs(this._paneId, { ansi: options.ansi !== false }),
+				{ allowNonZeroExit: true },
+			);
+			return this.normalizeCaptureOutput(result.stdout, this._rows);
+		} catch {
+			return [];
+		}
 	}
 
 	getTailLines(options: TailLinesOptions): TailLinesResult {
-		// Phase 5 will implement via capture-pane.
-		void options;
-		return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
+		// Capture-pane with scrollback. Slice to the requested line count
+		// (mirrors PtyTerminalSession.getTailLines's contract).
+		const requested = Math.max(0, Math.trunc(options.lines));
+		const maxChars =
+			options.maxChars !== undefined ? Math.max(0, Math.trunc(options.maxChars)) : undefined;
+
+		if (this.disposed || !this._paneId) {
+			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
+		}
+		if (requested === 0) {
+			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
+		}
+
+		let allLines: string[] = [];
+		try {
+			const result = this.tmuxRunner.runTmux(
+				buildCapturePaneArgs(this._paneId, {
+					ansi: options.ansi !== false,
+					includeHistory: true,
+				}),
+				{ allowNonZeroExit: true },
+			);
+			allLines = this.normalizeCaptureOutput(result.stdout, undefined);
+		} catch {
+			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
+		}
+
+		const totalLinesInBuffer = allLines.length;
+		const start = Math.max(0, totalLinesInBuffer - requested);
+		const tail = allLines.slice(start);
+
+		// maxChars truncation: walk forward, drop lines once the budget is exhausted.
+		let truncatedByChars = false;
+		let remaining = maxChars;
+		const out: string[] = [];
+		for (const line of tail) {
+			if (remaining !== undefined) {
+				if (remaining <= 0) {
+					truncatedByChars = true;
+					break;
+				}
+				remaining -= line.length;
+			}
+			out.push(line);
+		}
+		return { lines: out, totalLinesInBuffer, truncatedByChars };
+	}
+
+	private normalizeCaptureOutput(raw: string, padToRows: number | undefined): string[] {
+		// tmux's capture-pane output ends with a trailing newline. Split,
+		// drop the empty trailing element, optionally pad to `padToRows`
+		// for getViewportLines's fixed-row contract.
+		const stripped = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+		const lines = stripped.length === 0 ? [] : stripped.split("\n");
+		if (padToRows !== undefined && lines.length < padToRows) {
+			while (lines.length < padToRows) lines.push("");
+		}
+		return lines;
 	}
 
 	getRawStream(options: RawStreamOptions = {}): string {
