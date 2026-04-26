@@ -2,6 +2,8 @@
 
 > **Audience:** the two background agents implementing the push and pull bake-off candidates. Read this before writing code. Treat it as a contract: anything the dispatcher consumes from `PtyTerminalSession` today, your `PtyPaneSession` MUST also expose with identical semantics. Anything else is implementation detail.
 
+> **Bake-off resolution:** Both candidates were implemented and reviewed. Pull (capture-pane polling, `feat/tmux-pane-mode-pull`) had five blockers and three concerns from a Codex code review — most were bugs in the diff/synthesis layer that would have been thrown away anyway. Push (pipe-pane fifo, `feat/tmux-pane-mode-push`) hung the test runner because Node's libuv strands a thread on blocking fifo reads that survives `stream.destroy()`. The shipped implementation lives on `feat/tmux-pane-mode-hybrid` and combines push's byte-stream approach (with a child-process fifo reader to sidestep the libuv issue) with pull's on-demand `capture-pane` queries for viewport rendering. **See `docs/pane-mode-hybrid.md` for the full design and rationale.** Sections §3 (public surface), §2 (schema), and §8 (fixtures) of this brief still apply; §4 (Approach A vs B comparison) and §6 (tmux flag survey) are bake-off-era thinking and are now superseded.
+
 ## 1. Goal
 
 Add an opt-in alternative render target to `pi-interactive-shell`. Instead of spawning the target process inside an `@xterm/headless` buffer that pi renders as an overlay, spawn it inside a sibling tmux pane and mirror its output back into a buffer the existing dispatcher already knows how to query.
