@@ -45,6 +45,12 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
+import { sliceLogOutput, trimRawOutput } from "./pty-log.js";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	buildCapturePaneArgs,
 	buildKillPaneArgs,
@@ -54,11 +60,11 @@ import {
 	buildSelectPaneArgs,
 	buildSendKeysLiteralArgs,
 	buildSendKeysNamedArgs,
-	buildSetPaneOptionArgs,
 	buildSplitWindowArgs,
 	DefaultTmuxRunner,
 	type TmuxRunner,
 } from "./tmux-cli.js";
+
 import type {
 	LogSliceOptions,
 	LogSliceResult,
@@ -354,7 +360,14 @@ export class PtyPaneSession implements PtySession {
 	private handleBytes(chunk: string): void {
 		if (this.disposed) return;
 		this.rawOutput += chunk;
+		this.trimRawOutputIfNeeded();
 		this.notifyDataListeners(chunk);
+	}
+
+	private trimRawOutputIfNeeded(): void {
+		const trimmed = trimRawOutput(this.rawOutput, this.lastStreamPosition);
+		this.rawOutput = trimmed.rawOutput;
+		this.lastStreamPosition = trimmed.lastStreamPosition;
 	}
 
 	private handleReaderExit(): void {
@@ -511,14 +524,14 @@ export class PtyPaneSession implements PtySession {
 		} else {
 			output = this.rawOutput;
 		}
-		// stripAnsi default true is documented at the interface.
-		// Actual stripping happens in Phase 4 once data flows in.
+		if (options.stripAnsi !== false && output) {
+			output = stripVTControlCharacters(output);
+		}
 		return output;
 	}
 
-	getLogSlice(_options: LogSliceOptions = {}): LogSliceResult {
-		// Phase 4 will route through pty-log.ts's sliceLogOutput.
-		return { slice: "", totalLines: 0, totalChars: 0, sliceLineCount: 0 };
+	getLogSlice(options: LogSliceOptions = {}): LogSliceResult {
+		return sliceLogOutput(this.rawOutput, options);
 	}
 
 	// --- PtySession overlay scroll (no-op for pane sessions) -------------
