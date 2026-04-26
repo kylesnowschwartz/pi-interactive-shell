@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
+import { setupPinnedWidget, type PinnedWidgetHandle } from "./pinned-widget.js";
 import { PtyTerminalSession } from "./pty-session.js";
 import { formatDuration, formatDurationMs } from "./types.js";
 import type {
@@ -647,6 +648,14 @@ function appendWorktreeNotice(text: string, worktreePath: string | undefined): s
 export default function interactiveShellExtension(pi: ExtensionAPI) {
 	const startupConfig = loadConfig(process.cwd());
 	let terminalInputCleanup: (() => void) | null = null;
+	/**
+	 * Active pinned-render widgets, keyed by session id. The widget handle
+	 * provides hide/show (for overlay popout) and dispose (for session
+	 * teardown). Pinned sessions remain non-blocking by design — the agent
+	 * gets back control immediately after spawn; the user interacts with
+	 * the session via the focusShortcut (overlay popout).
+	 */
+	const pinnedWidgets = new Map<string, PinnedWidgetHandle>();
 	const loadRuntimeConfig = (cwd: string): InteractiveShellConfig => {
 		const config = loadConfig(cwd);
 		return {
@@ -714,6 +723,66 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			coordinator.endOverlay();
 		}
 	};
+
+	/**
+	 * Pop out the most recently spawned pinned session into the standard
+	 * InteractiveShellOverlay for direct interaction. Hides the widget while
+	 * the overlay is up; restores it when the overlay closes. Refuses if
+	 * another overlay is already open or no pinned sessions exist.
+	 */
+	const popoutMostRecentPinnedSession = async (ctx: ExtensionContext): Promise<void> => {
+		if (pinnedWidgets.size === 0) {
+			ctx.ui.notify("No pinned interactive_shell sessions to pop out.", "info");
+			return;
+		}
+		if (!coordinator.beginOverlay()) {
+			ctx.ui.notify("An overlay is already open. Close it first.", "warning");
+			return;
+		}
+
+		// Pinned sessions are stored in insertion order via Map; the most
+		// recent is the last entry. (For now we always pop the most recent;
+		// a multi-pinned picker UX can come later.)
+		const entries = Array.from(pinnedWidgets.entries());
+		const [pinnedId, widget] = entries[entries.length - 1];
+		const record = sessionManager.list().find((s) => s.id === pinnedId);
+		if (!record) {
+			coordinator.endOverlay();
+			pinnedWidgets.delete(pinnedId);
+			widget.dispose();
+			ctx.ui.notify(`Pinned session ${pinnedId} is no longer registered.`, "warning");
+			return;
+		}
+
+		widget.setHidden(true);
+		const config = loadRuntimeConfig(ctx.cwd);
+		try {
+			await ctx.ui.custom<InteractiveShellResult>(
+				(tui, theme, _kb, done) =>
+					new InteractiveShellOverlay(tui, theme, {
+						command: record.command,
+						existingSession: record.session,
+						sessionId: pinnedId,
+						cwd: ctx.cwd,
+						name: record.name,
+						reason: record.reason,
+						startedAt: record.startedAt.getTime(),
+						onUnfocus: () => coordinator.unfocusOverlay(),
+					}, config, done),
+				createOverlayUiOptions(config),
+			);
+		} finally {
+			coordinator.endOverlay();
+			// If the session is still alive after overlay close, the widget
+			// re-renders. If the overlay's close path killed/transferred the
+			// session, the widget will reflect that on its next render
+			// (or be disposed via the session-removed cleanup hook).
+			if (pinnedWidgets.has(pinnedId)) {
+				widget.setHidden(false);
+			}
+		}
+	};
+
 	const startNewSession = async (params: {
 		ctx: Pick<ExtensionContext, "ui" | "cwd" | "sessionManager"> & { hasUI?: boolean };
 		command?: string;
@@ -728,9 +797,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		handoffSnapshot?: ToolParams["handoffSnapshot"];
 		timeout?: number;
 		monitor?: ToolParams["monitor"];
+		render?: "overlay" | "pinned";
 		onUpdate?: (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void;
 	}): Promise<{ content: Array<{ type: "text"; text: string }>; details?: any; isError?: boolean }> => {
-		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, onUpdate } = params;
+		const { ctx, command, spawn, cwd, name, reason, mode, background, handsFree, handoffPreview, handoffSnapshot, timeout, monitor, render, onUpdate } = params;
 		const allowsGeneratedCommand = mode === "monitor" && monitor?.strategy === "file-watch";
 		if (!command && !spawn && !allowsGeneratedCommand) {
 			return {
@@ -751,6 +821,38 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				isError: true,
 			};
 		}
+
+		// `render: "pinned"` is the side-by-side mode: agent runs in a
+		// PtyTerminalSession (same as overlay) but pi shows the recent output
+		// as a persistent widget above the chat editor instead of opening a
+		// modal overlay. The user pops out via the focusShortcut when they
+		// want to interact with the agent directly. Validation:
+		//   - hasUI required: nothing to draw the widget on without a TUI.
+		//   - monitor + background combos: refuse for now — those flows have
+		//     their own dispatch paths and don't combine cleanly with the
+		//     widget. Pinned mode is non-blocking by design (returns the
+		//     session id immediately and runs in the background).
+		if (render === "pinned") {
+			if (!hasUI) {
+				return {
+					content: [{ type: "text", text: "render: 'pinned' requires an interactive TUI (no headless invocation)." }],
+					isError: true,
+				};
+			}
+			if (isMonitorMode) {
+				return {
+					content: [{ type: "text", text: "render: 'pinned' is not supported with mode: 'monitor'. Monitor sessions run headlessly without UI rendering. Use render: 'overlay' (the default) or omit render." }],
+					isError: true,
+				};
+			}
+			if (background) {
+				return {
+					content: [{ type: "text", text: "render: 'pinned' is not supported with background: true. Pinned sessions are inherently non-blocking and remain visible as a widget; the agent gets control back immediately after spawn. Drop background: true." }],
+					isError: true,
+				};
+			}
+		}
+
 		if (!isMonitorMode && !(mode === "dispatch" && background)) {
 			if (!hasUI) {
 				return {
@@ -836,6 +938,45 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: appendWorktreeNotice(`Monitor started in background (id: ${id}).\nStrategy: ${compiledMonitor.compiled.publicConfig.strategy ?? "stream"}\nTriggers: ${compiledMonitor.compiled.publicConfig.triggers.map((trigger) => trigger.id).join(", ")}\nYou'll be notified when a trigger emits an event.`, spawnWorktreePath) }],
 				details: { sessionId: id, backgroundId: id, mode: "monitor", monitor: compiledMonitor.compiled.publicConfig, background: true, spawnAgent, spawnMode, spawnWorktreePath },
+			};
+		}
+
+		if (render === "pinned") {
+			// Pinned mode: spawn the same PtyTerminalSession as overlay/dispatch,
+			// register it in the session manager so output queries / kill /
+			// /attach all work normally, and stand up the widget. Returns
+			// immediately so the agent gets control back; the user uses the
+			// focusShortcut to pop out into the existing overlay when they
+			// want to interact with the agent directly.
+			const id = generateSessionId(name);
+			const session = new PtyTerminalSession(
+				{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
+			);
+			const startTime = Date.now();
+			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
+
+			const widget = setupPinnedWidget({
+				sessionId: id,
+				command: effectiveCommand,
+				startedAt: new Date(startTime),
+				session,
+				ctx: { ui: ctx.ui as any, hasUI: hasUI },
+			});
+			if (widget) {
+				pinnedWidgets.set(id, widget);
+				// addExitListener (vs setEventHandlers) is ADDITIVE — it returns
+				// an unsubscriber and doesn't clobber other handlers. This matters
+				// because when the user pops out via focusShortcut,
+				// InteractiveShellOverlay calls setEventHandlers on the same
+				// session and would replace any onExit we'd registered.
+				session.addExitListener((code) => {
+					widget.markExited(code ?? null);
+				});
+			}
+
+			return {
+				content: [{ type: "text", text: appendWorktreeNotice(`Session pinned (id: ${id}).\nVisible above the chat editor; press the focusShortcut to interact directly.\nQuery: interactive_shell({ sessionId: "${id}" }) — kill: interactive_shell({ sessionId: "${id}", kill: true }).`, spawnWorktreePath) }],
+				details: { sessionId: id, backgroundId: id, mode: mode ?? "interactive", render: "pinned", spawnAgent, spawnMode, spawnWorktreePath },
 			};
 		}
 
@@ -1027,9 +1168,17 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		};
 	};
 	pi.registerShortcut(startupConfig.focusShortcut, {
-		description: "Focus interactive shell overlay",
-		handler: () => {
-			coordinator.focusOverlay();
+		description: "Focus interactive shell overlay or pop out a pinned session",
+		handler: (ctx) => {
+			if (coordinator.isOverlayOpen()) {
+				coordinator.focusOverlay();
+				return;
+			}
+			// No overlay open: if there's an active pinned session, pop it
+			// out into the standard InteractiveShellOverlay for direct
+			// interaction. Closing the overlay returns control to chat input
+			// and the widget re-renders with whatever ran during the popout.
+			void popoutMostRecentPinnedSession(ctx);
 		},
 	});
 	pi.registerShortcut(startupConfig.spawn.shortcut, {
@@ -1039,6 +1188,20 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		coordinator.replaceBackgroundWidgetCleanup(setupBackgroundWidget(ctx, sessionManager, coordinator));
+		// When a session is removed from the manager (dismissBackground,
+		// /attach + transfer, kill flows, etc.), dispose its pinned widget
+		// so it disappears from the UI. Sessions that exit naturally remain
+		// in the manager (noAutoCleanup: true) and the widget keeps showing
+		// the final state — same retention model as background widgets.
+		sessionManager.onChange(() => {
+			const liveIds = new Set(sessionManager.list().map((s) => s.id));
+			for (const [id, widget] of pinnedWidgets) {
+				if (!liveIds.has(id)) {
+					widget.dispose();
+					pinnedWidgets.delete(id);
+				}
+			}
+		});
 		terminalInputCleanup?.();
 		terminalInputCleanup = ctx.ui.onTerminalInput((data) => {
 			if (!coordinator.isOverlayOpen()) return undefined;
@@ -1114,6 +1277,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				handoffSnapshot,
 				timeout,
 				monitor,
+				render,
 			} = params as ToolParams;
 
 			const hasStructuredInput = inputKeys?.length || inputHex?.length || inputPaste;
@@ -1619,6 +1783,7 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				mode,
 				background,
 				monitor,
+				render,
 				handsFree,
 				handoffPreview,
 				handoffSnapshot,
