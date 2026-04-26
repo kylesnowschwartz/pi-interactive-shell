@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	PtyPaneSession,
 	type PtyPaneSessionOptions,
+	signalNameToNumber,
 	splitWriteForSendKeys,
 } from "../pty-pane-session.js";
 import type { PtySession } from "../pty-session-interface.js";
@@ -471,5 +472,67 @@ describe("resize", () => {
 		session.resize(-1, -1);
 		expect(runner.findCalls("resize-pane")).toHaveLength(0);
 		session.dispose();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-2 NB1: post-exit getTailLines fallback to rawOutput
+// ---------------------------------------------------------------------------
+
+describe("getTailLines post-exit fallback (codex round-2 NB1)", () => {
+	it("reads from rawOutput when session has exited", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("row 1\nrow 2\nrow 3\nrow 4\nrow 5\n");
+		session._simulateReaderExit(); // marks _exited = true
+
+		const tail = session.getTailLines({ lines: 3, ansi: false });
+		expect(tail.lines).toEqual(["row 3", "row 4", "row 5"]);
+		expect(tail.totalLinesInBuffer).toBe(5);
+	});
+
+	it("strips ANSI in fallback path when ansi: false", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("\u001b[31mred\u001b[0m\nplain\n");
+		session._simulateReaderExit();
+
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["red", "plain"]);
+	});
+
+	it("preserves ANSI in fallback path when ansi: true", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("\u001b[31mred\u001b[0m\n");
+		session._simulateReaderExit();
+
+		const tail = session.getTailLines({ lines: 1, ansi: true });
+		expect(tail.lines).toEqual(["\u001b[31mred\u001b[0m"]);
+	});
+
+	it("maxChars truncation works in fallback path", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("row 1\nrow 2\nrow 3\n");
+		session._simulateReaderExit();
+
+		const tail = session.getTailLines({ lines: 5, ansi: false, maxChars: 8 });
+		expect(tail.truncatedByChars).toBe(true);
+		expect(tail.lines.length).toBeLessThan(3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-2 NC1: signalNameToNumber helper
+// ---------------------------------------------------------------------------
+
+describe("signalNameToNumber (codex round-2 NC1)", () => {
+	it("maps known signal names to POSIX numbers", () => {
+		expect(signalNameToNumber("SIGHUP")).toBe(1);
+		expect(signalNameToNumber("SIGINT")).toBe(2);
+		expect(signalNameToNumber("SIGTERM")).toBe(15);
+		expect(signalNameToNumber("SIGKILL")).toBe(9);
+	});
+
+	it("returns null for unknown signal names", () => {
+		expect(signalNameToNumber("SIGNOTREAL")).toBeNull();
+		expect(signalNameToNumber("")).toBeNull();
 	});
 });

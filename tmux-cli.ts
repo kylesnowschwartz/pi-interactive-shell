@@ -141,10 +141,21 @@ export interface CapturePaneOptions {
 	 * Takes precedence over `includeHistory`.
 	 */
 	startLine?: string;
+	/**
+	 * Join soft-wrapped lines with `-J` (default true).
+	 *
+	 * Set false to preserve one entry per screen row (matches
+	 * `PtyTerminalSession.getViewportLines`'s row-shape contract). Set
+	 * true (default) for content-line semantics where a wrapped logical
+	 * line is a single string — right for `getTailLines` and history
+	 * queries. Codex review NC2.
+	 */
+	joinWrappedLines?: boolean;
 }
 
 export function buildCapturePaneArgs(paneId: string, options: CapturePaneOptions = {}): string[] {
-	const args: string[] = ["capture-pane", "-p", "-J", "-t", paneId];
+	const args: string[] = ["capture-pane", "-p", "-t", paneId];
+	if (options.joinWrappedLines !== false) args.push("-J");
 	if (options.ansi !== false) args.push("-e");
 	if (options.startLine !== undefined) {
 		args.push("-S", options.startLine, "-E", "-");

@@ -138,6 +138,16 @@ export class PtyPaneSession implements PtySession {
 	private _exited = false;
 	private _exitCode: number | null = null;
 	private _signal: number | undefined;
+	/**
+	 * Most recent signal sent via `kill()`, captured both as the original
+	 * string name and its numeric value. Used by `handleReaderExit` to
+	 * synthesize an accurate `128 + signum` exit code when our wrapping
+	 * shell is killed by an untrappable signal (SIGKILL) or in any other
+	 * race where the EXIT trap can't write the sidecar. See codex review
+	 * NC1.
+	 */
+	private _lastSentSignalName: string | null = null;
+	private _lastSentSignalNum: number | null = null;
 
 	private rawOutput = "";
 	private lastStreamPosition = 0;
@@ -381,18 +391,25 @@ export class PtyPaneSession implements PtySession {
 		// The cat reader exited. Either:
 		//   (a) the target process exited → wrapping shell wrote the exit
 		//       file → wrapping shell exited → tmux pty closed → pipe-pane
-		//       drained → cat saw EOF → we are here.
-		//   (b) dispose() SIGKILL'd cat for orderly teardown.
-		//   (c) cat itself crashed (rare; e.g. fifo unlinked under it).
+		//       drained → cat saw EOF → we are here. Sidecar has the real
+		//       exit code, including 128+N for trapped signals.
+		//   (b) dispose() SIGKILL'd cat for orderly teardown. Sidecar may
+		//       not exist (we beat the wrapping shell to its EXIT trap).
+		//   (c) we sent the pane process group an untrappable signal
+		//       (SIGKILL) or a signal whose disposition our wrapping shell
+		//       can't fully cover. Wrapping shell dies before its EXIT trap
+		//       runs; sidecar missing.
+		//   (d) cat itself crashed (rare; e.g. fifo unlinked under it).
 		//
-		// In case (a) the exit file exists with the real exit code. In (b)
-		// the file may not exist yet because dispose ran before the wrapping
-		// shell wrote it; we synthesize 130 (SIGINT-equivalent) so callers
-		// can distinguish. In (c) we also fall through to synthetic.
+		// Codex review NC1: in cases (b)/(c), if we know which signal we
+		// just sent via kill(), prefer 128+signum over the bare 130 default
+		// so callers can distinguish (e.g. SIGKILL=137, SIGTERM=143).
 		if (this.disposed) return;
 		if (this._exited) return;
 
-		let exitCode = 130; // synthetic default for case (b)/(c)
+		const signalFallback =
+			this._lastSentSignalNum !== null ? 128 + this._lastSentSignalNum : 130;
+		let exitCode = signalFallback;
 		try {
 			const raw = readFileSync(this.exitFilePath, "utf8").trim();
 			const parsed = Number.parseInt(raw, 10);
@@ -400,7 +417,7 @@ export class PtyPaneSession implements PtySession {
 				exitCode = parsed;
 			}
 		} catch {
-			// File missing or unreadable — keep synthetic default.
+			// Sidecar missing — keep the signal-aware fallback.
 		}
 
 		this._exited = true;
@@ -545,7 +562,14 @@ export class PtyPaneSession implements PtySession {
 		if (this.disposed || !this._paneId) return [];
 		try {
 			const result = this.tmuxRunner.runTmux(
-				buildCapturePaneArgs(this._paneId, { ansi: options.ansi !== false }),
+				buildCapturePaneArgs(this._paneId, {
+					ansi: options.ansi !== false,
+					// Preserve one entry per screen row, including soft-wrap
+					// continuations — matches PtyTerminalSession.getViewportLines's
+					// row-shape contract that overlay/reattach code depends on.
+					// Codex review NC2.
+					joinWrappedLines: false,
+				}),
 				{ allowNonZeroExit: true },
 			);
 			return this.normalizeCaptureOutput(result.stdout, this._rows);
@@ -555,39 +579,55 @@ export class PtyPaneSession implements PtySession {
 	}
 
 	getTailLines(options: TailLinesOptions): TailLinesResult {
-		// Capture-pane with scrollback. Slice to the requested line count
-		// (mirrors PtyTerminalSession.getTailLines's contract).
+		// `getTailLines` has TWO sources of truth, depending on pane state:
+		//
+		//   1. **Pane is alive** — query tmux's `capture-pane` for the
+		//      pane's full buffer including scrollback, then slice. This
+		//      reflects what the user is currently seeing.
+		//
+		//   2. **Pane has exited** (codex review NB1) — the pane has been
+		//      reaped by tmux (we drop `remain-on-exit`), so `capture-pane`
+		//      returns nothing. Fall back to the byte stream we captured
+		//      via the fifo: `rawOutput` still has every byte the process
+		//      emitted. This is critical for headless-monitor's completion
+		//      capture, handoff-utils' transfer payload, and the dispatch
+		//      mode's exit-time output snapshot — all three call
+		//      `getTailLines` after the session has exited and would
+		//      otherwise see blank output.
 		const requested = Math.max(0, Math.trunc(options.lines));
 		const maxChars =
 			options.maxChars !== undefined ? Math.max(0, Math.trunc(options.maxChars)) : undefined;
 
-		if (this.disposed || !this._paneId) {
-			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
-		}
 		if (requested === 0) {
 			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
 		}
 
-		let allLines: string[] = [];
-		try {
-			const result = this.tmuxRunner.runTmux(
-				buildCapturePaneArgs(this._paneId, {
-					ansi: options.ansi !== false,
-					includeHistory: true,
-				}),
-				{ allowNonZeroExit: true },
-			);
-			allLines = this.normalizeCaptureOutput(result.stdout, undefined);
-			// Trim trailing empty rows. tmux capture-pane returns the entire
-			// pane buffer including unfilled rows below the cursor (default
-			// pane is 24 rows wide). For getTailLines the contract is
-			// 'last N content lines', so drop the trailing padding. We keep
-			// internal empty lines — only TRAILING ones are padding.
-			while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
-				allLines.pop();
+		let allLines: string[];
+		if (this._exited || this.disposed || !this._paneId) {
+			allLines = this.tailLinesFromRawOutput(options.ansi !== false);
+		} else {
+			try {
+				const result = this.tmuxRunner.runTmux(
+					buildCapturePaneArgs(this._paneId, {
+						ansi: options.ansi !== false,
+						includeHistory: true,
+					}),
+					{ allowNonZeroExit: true },
+				);
+				allLines = this.normalizeCaptureOutput(result.stdout, undefined);
+				// Trim trailing empty rows. tmux capture-pane returns the entire
+				// pane buffer including unfilled rows below the cursor (default
+				// pane is 24 rows wide). For getTailLines the contract is
+				// 'last N content lines', so drop the trailing padding. We keep
+				// internal empty lines — only TRAILING ones are padding.
+				while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+					allLines.pop();
+				}
+			} catch {
+				// Pane query failed — maybe pane was reaped between our exited
+				// check and the capture. Fall back to rawOutput just in case.
+				allLines = this.tailLinesFromRawOutput(options.ansi !== false);
 			}
-		} catch {
-			return { lines: [], totalLinesInBuffer: 0, truncatedByChars: false };
 		}
 
 		const totalLinesInBuffer = allLines.length;
@@ -609,6 +649,25 @@ export class PtyPaneSession implements PtySession {
 			out.push(line);
 		}
 		return { lines: out, totalLinesInBuffer, truncatedByChars };
+	}
+
+	private tailLinesFromRawOutput(ansi: boolean): string[] {
+		// Mirror `pty-log.ts`'s sliceLogOutput line-extraction logic so the
+		// dead-pane fallback produces the same line shape the live path does.
+		let source = this.rawOutput;
+		if (!ansi && source) {
+			source = stripVTControlCharacters(source);
+		}
+		if (!source) return [];
+		const normalized = source.replace(/\r\n/g, "\n");
+		const lines = normalized.split("\n");
+		// Drop the trailing empty entry that always appears when source ends
+		// with `\n` — it represents 'cursor about to start a new line', not
+		// an actual content line.
+		if (lines.length > 0 && lines[lines.length - 1] === "") {
+			lines.pop();
+		}
+		return lines;
 	}
 
 	private normalizeCaptureOutput(raw: string, padToRows: number | undefined): string[] {
@@ -657,6 +716,13 @@ export class PtyPaneSession implements PtySession {
 		// We use the captured _pid (the shell tmux spawned for the pane);
 		// the pane process group head will be that pid.
 		if (this._exited || this.disposed) return;
+
+		// Remember the signal for handleReaderExit's signal-aware fallback
+		// (codex review NC1). When the wrapping shell can't write the exit
+		// sidecar (e.g. SIGKILL is untrappable), we use 128+signum here.
+		this._lastSentSignalName = signal;
+		this._lastSentSignalNum = signalNameToNumber(signal);
+
 		if (process.platform !== "win32" && this._pid) {
 			try {
 				process.kill(-this._pid, signal as NodeJS.Signals);
@@ -801,4 +867,34 @@ export function splitWriteForSendKeys(data: string): WriteRun[] {
 	}
 	if (buf) out.push({ kind: "literal", value: buf });
 	return out;
+}
+
+/**
+ * Map common signal names to their POSIX numeric values, used by
+ * `handleReaderExit`'s fallback to compute `128 + signum` when the
+ * wrapping shell didn't get a chance to write the exit-code sidecar.
+ *
+ * `os.constants.signals` would give us this for free, but the table
+ * is short and pinning it explicitly avoids a runtime dependency on
+ * Node version differences (some signals are platform-specific).
+ * If a caller passes an unknown signal name we return null so the
+ * fallback uses the 130 default rather than NaN.
+ */
+const SIGNAL_NAME_TO_NUMBER: Record<string, number> = {
+	SIGHUP: 1,
+	SIGINT: 2,
+	SIGQUIT: 3,
+	SIGABRT: 6,
+	SIGKILL: 9,
+	SIGUSR1: 10,
+	SIGUSR2: 12,
+	SIGPIPE: 13,
+	SIGALRM: 14,
+	SIGTERM: 15,
+};
+
+/** @internal Exported for testing. Returns null for unknown signal names. */
+export function signalNameToNumber(signal: string): number | null {
+	const num = SIGNAL_NAME_TO_NUMBER[signal];
+	return typeof num === "number" ? num : null;
 }

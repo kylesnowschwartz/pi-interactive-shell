@@ -463,3 +463,126 @@ describeIfTmux("lifecycle hygiene", () => {
 		expect(listPanesOnSocket(socket).length).toBe(before);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Codex round-2 NB1: post-exit getTailLines falls back to rawOutput
+// ---------------------------------------------------------------------------
+
+describeIfTmux("post-exit completion capture (codex round-2 NB1)", () => {
+	it("getTailLines returns content from rawOutput after pane is reaped", async () => {
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{ command: 'for i in 1 2 3 4 5; do echo "row $i"; done; exit 0', tmuxRunner: runner },
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await waitFor(() => exitCode !== undefined, 5000);
+		// Give tmux a beat to actually reap the pane
+		await new Promise((r) => setTimeout(r, 200));
+
+		// Pane is gone now — confirm capture-pane would return nothing
+		expect(session.exited).toBe(true);
+		const tail = session.getTailLines({ lines: 3, ansi: false });
+		expect(tail.lines).toEqual(["row 3", "row 4", "row 5"]);
+		expect(tail.totalLinesInBuffer).toBe(5);
+	});
+
+	it("getTailLines maxChars budget honoured in dead-pane path", async () => {
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				// 5 lines so the maxChars budget gets exceeded mid-walk; with a
+				// single line the loop terminates before the budget check fires.
+				{ command: 'for i in 1 2 3 4 5; do echo "row $i"; done; exit 0', tmuxRunner: runner },
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await waitFor(() => exitCode !== undefined, 5000);
+		await new Promise((r) => setTimeout(r, 200));
+
+		const tail = session.getTailLines({ lines: 5, ansi: false, maxChars: 12 });
+		expect(tail.truncatedByChars).toBe(true);
+		expect(tail.lines.length).toBeLessThan(5);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-2 NC1: signal-aware exit code synthesis
+// ---------------------------------------------------------------------------
+
+describeIfTmux("signal-aware exit codes (codex round-2 NC1)", () => {
+	it("session.kill('SIGTERM') propagates 143 (preferred via sidecar)", async () => {
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{ command: "sleep 30", tmuxRunner: runner },
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await new Promise((r) => setTimeout(r, 200));
+		session.kill("SIGTERM");
+		await waitFor(() => exitCode !== undefined, 4000);
+		expect(exitCode).toBe(143);
+	});
+
+	it("session.kill('SIGKILL') propagates 137 via signal-aware fallback", async () => {
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{ command: "sleep 30", tmuxRunner: runner },
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await new Promise((r) => setTimeout(r, 200));
+		session.kill("SIGKILL");
+		await waitFor(() => exitCode !== undefined, 4000);
+		// SIGKILL is untrappable; wrapping shell can't write the sidecar.
+		// The signal-aware fallback maps 9 → 137. Pre-fix this returned 130.
+		expect(exitCode).toBe(137);
+	});
+
+	it("session.kill('SIGHUP') propagates 129", async () => {
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{ command: "sleep 30", tmuxRunner: runner },
+				{ onExit: (c) => { exitCode = c; } },
+			),
+		);
+		await new Promise((r) => setTimeout(r, 200));
+		session.kill("SIGHUP");
+		await waitFor(() => exitCode !== undefined, 4000);
+		expect(exitCode).toBe(129);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-2 NC2: viewport preserves rows, tail joins them
+// ---------------------------------------------------------------------------
+
+describeIfTmux("viewport vs tail wrapping (codex round-2 NC2)", () => {
+	it("long line: viewport returns multiple wrapped rows, tail returns one logical line", async () => {
+		// Default pane sizePercent: 40 → ~32 cols on a typical 80-col host pane.
+		// A 150-char line will wrap to multiple rows.
+		const longLine = "x".repeat(150);
+		const session = track(
+			new PtyPaneSession(
+				{ command: `printf '${longLine}\\n'; sleep 3`, tmuxRunner: runner },
+				{},
+			),
+		);
+		await new Promise((r) => setTimeout(r, 400));
+
+		// Viewport: row-shape preserved — the wrapped line shows as multiple rows.
+		const viewport = session.getViewportLines({ ansi: false });
+		const contentRows = viewport.filter((row) => row.length > 0);
+		expect(contentRows.length).toBeGreaterThan(1);
+
+		// Tail: logical-line semantics — the wrap is joined back into a single
+		// 150-char content string.
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		const longRow = tail.lines.find((l) => l.length === 150);
+		expect(longRow).toBe(longLine);
+	});
+});
