@@ -618,8 +618,15 @@ function registerPinnedActive(
 		write: (data) => session.write(data),
 		kill: () => {
 			session.kill();
-			sessionManager.remove(id);
 			sessionManager.unregisterActive(id, true);
+			// Do NOT call sessionManager.remove(id) here. Removing would dispose
+			// the PtyTerminalSession (tearing down xterm) and trigger onChange,
+			// which would dispose the pinned widget — making the widget vanish
+			// on kill while natural exit leaves it visible. Instead, schedule a
+			// deferred cleanup so the widget shows the final 'exited' state for
+			// a few minutes, then auto-disposes (matches the headless-dispatch
+			// completion pattern). User can dismissBackground earlier to clear.
+			sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
 		},
 		background: () => {},
 		getOutput: (opts) => getSessionOutput(session, config, queryState, opts, undefined),
@@ -1026,6 +1033,13 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				// session and would replace any onExit we'd registered.
 				session.addExitListener((code) => {
 					widget.markExited(code ?? null);
+					// Schedule deferred cleanup. Mirrors the kill-callback path so
+					// natural exit and explicit kill both retain the widget for ~5
+					// minutes (showing the final exit state) and then auto-dismiss.
+					// Without this the session lingers in sessionManager forever
+					// because we passed noAutoCleanup: true at add() time.
+					sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
+					sessionManager.unregisterActive(id, true);
 				});
 			}
 
