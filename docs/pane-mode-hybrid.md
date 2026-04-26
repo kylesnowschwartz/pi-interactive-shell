@@ -244,7 +244,7 @@ unit-tested independently.
 | --- | ---: | ---: | ---: | ---: | --- |
 | pull | 97 | 3 | 0 | 12 s | 5 blockers, 3 concerns from codex round 1 |
 | push | 86 | 13 | 0 | n/a | integration suite force-skipped (vitest hang) |
-| **hybrid** | **134** | **0** | **0** | **41 s** | Round 1 + Round 2 codex findings resolved |
+| **hybrid** | **143** | **0** | **0** | **44 s** | Round 1 + Round 2 + Round 3 codex findings resolved |
 
 Codex review findings against the pull bake-off, status in the
 hybrid:
@@ -287,6 +287,39 @@ all resolved in this branch:
   true). Viewport opts out of `-J` to preserve row shape; tail keeps
   it for content-line semantics. Tested.
 
+Codex round-3 review findings against the round-2 fix set, all
+resolved in this branch:
+
+- **R3-B1a** (handleReaderExit raced stdout drain): fixed;
+  switched the trigger from `child.on('exit')` to
+  `child.on('close')` per Node docs. `'exit'` may fire while
+  stdio still has buffered data; `'close'` waits for stdio to
+  drain. The `getTailLines`-in-onExit pattern that
+  `headless-monitor` and `handoff-utils` use now reliably sees
+  the final bytes. Tested with high-volume output.
+- **R3-B1b** (capture-pane non-zero fallback didn't fire): fixed;
+  `getTailLines` now explicitly checks `result.exitCode !== 0`
+  before parsing capture-pane output, falling through to
+  `tailLinesFromRawOutput`. Pre-fix the catch-block fallback
+  never triggered because `allowNonZeroExit:true` returns
+  cleanly rather than throwing. Tested.
+- **R3-B2** (overlay/reattach paths assumed terminal sessions):
+  fixed; added `kind: "terminal" | "pane"` discriminator to the
+  `PtySession` interface. Both `InteractiveShellOverlay` and
+  `ReattachOverlay` now check `session.kind` in their
+  constructors and throw if a pane session is passed. Phase 1
+  routing for `/attach` to a pane session must use a separate
+  pane-aware path; this guard is the safety net so the wrong
+  thing fails loudly rather than silently mutating the user's
+  tmux layout. Tested.
+- **R3-C1** (post-exit fallback returned raw bytes including
+  `\r`-rewriting): fixed; `tailLinesFromRawOutput` now takes
+  the substring after the last `\r` per line so spinners and
+  progress indicators show their final state (`Loading\rDone.`
+  → `Done.`). Combined with ANSI stripping this handles the
+  common patterns. Limits: `\b` backspace and full ANSI cursor
+  positioning still leak through; documented below. Tested with
+  five variant cases.
 ## Known limitations
 
 1. **Construction race window.** Bytes the target process emits
@@ -313,11 +346,23 @@ all resolved in this branch:
    cases cover the four control characters whose interpretation
    matters in practice.
 
-4. **Reattach not yet wired for pane sessions.** `existingSession`
-   in `InteractiveShellOptions` accepts `PtySession` post-Phase 1,
-   but the overlay's reattach path still assumes terminal-rendered
-   sessions. Phase 2 of the integration plan addresses this; for
-   now `/attach` to a pane session is undefined behavior.
+4. **Reattach refused for pane sessions (codex R3-B2).** Both
+   `InteractiveShellOverlay` and `ReattachOverlay` throw if given a
+   pane session, because their `resize()` and scroll controls assume
+   a buffered terminal view. Phase 1 routing for `/attach` to a pane
+   session must use a different code path (e.g. `tmux switch-client`
+   to bring the user's focus into the pane).
+
+5. **Post-exit fallback rendering (codex R3-C1, partial).** When
+   `getTailLines` falls back to `rawOutput` (pane reaped after
+   exit), it handles `\r`-rewriting per line so spinners/progress
+   indicators show their final state. It does NOT handle `\b`
+   backspace or full ANSI cursor positioning (e.g. CUP, EL beyond
+   what stripVT removes); those edge cases would require a real
+   terminal emulator. Practical impact: minimal for the use cases
+   pane mode targets (build watchers, agents, REPLs) since post-exit
+   capture is for completion notifications/snapshots, not pixel-
+   accurate replay.
 
 ## Why this is the right architecture
 
