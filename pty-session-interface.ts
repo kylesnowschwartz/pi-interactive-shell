@@ -70,6 +70,22 @@ export interface LogSliceResult {
 }
 
 export interface PtySession {
+	/**
+	 * Discriminator for runtime narrowing.
+	 *
+	 * `"terminal"` — PtyTerminalSession, runs inside a local @xterm/headless
+	 *   buffer; safe for InteractiveShellOverlay/ReattachOverlay (which call
+	 *   `resize()` on the underlying xterm and offer scroll controls against
+	 *   the headless buffer).
+	 *
+	 * `"pane"` — PtyPaneSession, runs inside a sibling tmux pane; calling
+	 *   `resize()` mutates the user's actual tmux layout, scroll methods are
+	 *   no-ops, and post-exit viewport queries are unavailable. The overlay
+	 *   and reattach paths refuse pane sessions until they grow pane-aware UI.
+	 *   Codex review R3-B2.
+	 */
+	readonly kind: "terminal" | "pane";
+
 	// Lifecycle state -------------------------------------------------------
 	readonly exited: boolean;
 	readonly exitCode: number | null;

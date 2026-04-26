@@ -42,6 +42,19 @@ export class ReattachOverlay implements Component, Focusable {
 		done: (result: InteractiveShellResult) => void,
 		private onUnfocus?: () => void,
 	) {
+		// Refuse pane sessions: this overlay later calls resize() on the
+		// session, which for PtyPaneSession would resize the user's actual
+		// tmux pane layout. Scroll/follow-bottom controls also expect a
+		// buffered xterm that pane sessions don't have. Until a pane-aware
+		// reattach path exists, /attach for pane sessions must route
+		// elsewhere. Codex review R3-B2.
+		if (bgSession.session.kind === "pane") {
+			throw new Error(
+				"ReattachOverlay does not support pane-render sessions; " +
+					"the overlay assumes a buffered terminal session and would resize " +
+					"the user's tmux layout. Pane sessions need a separate attach path.",
+			);
+		}
 		this.tui = tui;
 		this.theme = theme;
 		this.bgSession = bgSession;

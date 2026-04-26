@@ -128,6 +128,19 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		};
 
 		if (options.existingSession) {
+			// Refuse pane sessions: this overlay calls resize() on what it
+			// thinks is a buffered xterm, but PtyPaneSession.resize() mutates
+			// the user's actual tmux pane layout. Scroll controls offered by
+			// the overlay are also no-ops on pane sessions. Until a pane-aware
+			// reattach UI exists, route /attach for pane sessions elsewhere.
+			// Codex review R3-B2.
+			if (options.existingSession.kind === "pane") {
+				throw new Error(
+					"InteractiveShellOverlay does not support pane-render sessions; " +
+						"the overlay assumes a buffered terminal session and would resize " +
+						"the user's tmux layout. Pane sessions need a separate attach path.",
+				);
+			}
 			this.session = options.existingSession;
 			this.session.setEventHandlers(ptyEvents);
 			this.session.resize(cols, rows);

@@ -224,7 +224,14 @@ export class PtyPaneSession implements PtySession {
 			if (msg.trim()) console.error(`[pty-pane-session] reader stderr: ${msg.trim()}`);
 		});
 
-		child.on("exit", () => this.handleReaderExit());
+		// Use 'close' rather than 'exit' so all stdout 'data' events have
+		// already been delivered before we notify exit listeners. Per Node
+		// docs (https://nodejs.org/api/child_process.html), 'exit' may fire
+		// while stdio is still open and 'close' fires after stdio drains.
+		// Without this, post-exit getTailLines (codex review NB1's
+		// rawOutput fallback) can race the last buffered bytes from cat.
+		// Codex review R3-B1a.
+		child.on("close", () => this.handleReaderExit());
 		child.on("error", (err) => {
 			console.error(`[pty-pane-session] reader spawn error: ${err.message}`);
 		});
@@ -459,6 +466,9 @@ export class PtyPaneSession implements PtySession {
 
 	// --- PtySession lifecycle state --------------------------------------
 
+	readonly kind = "pane" as const;
+
+
 	get exited(): boolean {
 		return this._exited;
 	}
@@ -614,18 +624,28 @@ export class PtyPaneSession implements PtySession {
 					}),
 					{ allowNonZeroExit: true },
 				);
-				allLines = this.normalizeCaptureOutput(result.stdout, undefined);
-				// Trim trailing empty rows. tmux capture-pane returns the entire
-				// pane buffer including unfilled rows below the cursor (default
-				// pane is 24 rows wide). For getTailLines the contract is
-				// 'last N content lines', so drop the trailing padding. We keep
-				// internal empty lines — only TRAILING ones are padding.
-				while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
-					allLines.pop();
+				if (result.exitCode !== 0) {
+					// capture-pane returned non-zero (typically because the pane
+					// was reaped between our exited-state check and the capture).
+					// `allowNonZeroExit: true` makes the runner return cleanly
+					// rather than throw, so the catch block alone never fires here
+					// for the default runner. Codex review R3-B1b: explicit
+					// exit-code check before falling back to the byte stream.
+					allLines = this.tailLinesFromRawOutput(options.ansi !== false);
+				} else {
+					allLines = this.normalizeCaptureOutput(result.stdout, undefined);
+					// Trim trailing empty rows. tmux capture-pane returns the entire
+					// pane buffer including unfilled rows below the cursor (default
+					// pane is 24 rows wide). For getTailLines the contract is
+					// 'last N content lines', so drop the trailing padding. We keep
+					// internal empty lines — only TRAILING ones are padding.
+					while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+						allLines.pop();
+					}
 				}
 			} catch {
-				// Pane query failed — maybe pane was reaped between our exited
-				// check and the capture. Fall back to rawOutput just in case.
+				// Pane query threw — unusual with allowNonZeroExit:true but
+				// possible if the runner itself fails (e.g. tmux binary gone).
 				allLines = this.tailLinesFromRawOutput(options.ansi !== false);
 			}
 		}
@@ -660,7 +680,26 @@ export class PtyPaneSession implements PtySession {
 		}
 		if (!source) return [];
 		const normalized = source.replace(/\r\n/g, "\n");
-		const lines = normalized.split("\n");
+		const rawLines = normalized.split("\n");
+
+		// Apply CR-rewriting line-by-line so spinners/progress indicators
+		// that emit `Loading\rDone.` show their final state rather than the
+		// raw byte stream. tmux's live `capture-pane` already does this
+		// for the alive-pane path; the fallback needs to match. Codex
+		// review R3-C1.
+		//
+		// We take the substring after the LAST `\r` in each line. Real CLI
+		// tools that overwrite use `\r` (with optional `\033[K` to clear
+		// to end of line); after stripping ANSI, the after-last-CR span is
+		// the rendered final content. Limitations: `\b` backspace is not
+		// handled (rare in panes), and partial overwrites where the new
+		// content is shorter than the old leave junk by design — same as
+		// what the user sees on screen. Documented limitation.
+		const lines = rawLines.map((line) => {
+			const lastCr = line.lastIndexOf("\r");
+			return lastCr === -1 ? line : line.slice(lastCr + 1);
+		});
+
 		// Drop the trailing empty entry that always appears when source ends
 		// with `\n` — it represents 'cursor about to start a new line', not
 		// an actual content line.

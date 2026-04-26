@@ -536,3 +536,88 @@ describe("signalNameToNumber (codex round-2 NC1)", () => {
 		expect(signalNameToNumber("")).toBeNull();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Codex round-3 R3-B1b: explicit exitCode check after capture-pane
+// ---------------------------------------------------------------------------
+
+describe("getTailLines exitCode-aware fallback (codex round-3 R3-B1b)", () => {
+	it("falls back to rawOutput when capture-pane returns non-zero exitCode", () => {
+		const runner = new StubRunner();
+		runner.defaultResponse = (args) => {
+			if (args[0] === "split-window") return { stdout: "%42\n", stderr: "", exitCode: 0 };
+			if (args[0] === "display-message") return { stdout: "1234\n", stderr: "", exitCode: 0 };
+			if (args[0] === "capture-pane") {
+				// Simulate pane reaped between exited check and capture: runner
+				// returns non-zero rather than throwing (allowNonZeroExit:true).
+				return { stdout: "", stderr: "can't find pane", exitCode: 1 };
+			}
+			return { stdout: "", stderr: "", exitCode: 0 };
+		};
+
+		const { session } = makeSession({ tmuxRunner: runner });
+		// Pane is alive (no _exited), but capture-pane returns non-zero.
+		session._feedReaderBytes("row 1\nrow 2\n");
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["row 1", "row 2"]);
+		session.dispose();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-3 R3-C1: CR-handling in tailLinesFromRawOutput
+// ---------------------------------------------------------------------------
+
+describe("CR-handling in post-exit fallback (codex round-3 R3-C1)", () => {
+	it("shows final state of \\r-rewriting (Loading\\rDone. -> Done.)", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("Loading...\rDone.\n");
+		session._simulateReaderExit();
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["Done."]);
+	});
+
+	it("keeps content with no CR unchanged", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("plain line 1\nplain line 2\n");
+		session._simulateReaderExit();
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["plain line 1", "plain line 2"]);
+	});
+
+	it("handles multiple CR rewrites within a line (last wins)", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("step 1\rstep 2\rstep 3\n");
+		session._simulateReaderExit();
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["step 3"]);
+	});
+
+	it("handles CR-rewrite with ANSI clear-to-end (Loading\\r\\033[KDone -> Done after ANSI strip)", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("Loading...\r\u001b[KDone.\n");
+		session._simulateReaderExit();
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["Done."]);
+	});
+
+	it("per-line CR isolated; earlier lines unaffected", () => {
+		const { session } = makeSession();
+		session._feedReaderBytes("first\nsecond\rrewritten\nthird\n");
+		session._simulateReaderExit();
+		const tail = session.getTailLines({ lines: 5, ansi: false });
+		expect(tail.lines).toEqual(["first", "rewritten", "third"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Codex round-3 R3-B2: PtySession.kind discriminator
+// ---------------------------------------------------------------------------
+
+describe("PtySession.kind (codex round-3 R3-B2)", () => {
+	it("PtyPaneSession reports kind === 'pane'", () => {
+		const { session } = makeSession();
+		expect(session.kind).toBe("pane");
+		session.dispose();
+	});
+});

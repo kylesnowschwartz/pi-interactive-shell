@@ -305,6 +305,8 @@ export class PtyTerminalSession implements PtySession {
 		}
 	}
 
+	readonly kind = "terminal" as const;
+
 	get exited(): boolean {
 		return this._exited;
 	}

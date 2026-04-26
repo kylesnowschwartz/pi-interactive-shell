@@ -586,3 +586,64 @@ describeIfTmux("viewport vs tail wrapping (codex round-2 NC2)", () => {
 		expect(longRow).toBe(longLine);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Codex round-3 R3-B1a: handleReaderExit waits for stdout drain
+// ---------------------------------------------------------------------------
+
+describeIfTmux("close-event drain ordering (codex round-3 R3-B1a)", () => {
+	it("final bytes are visible in rawOutput when onExit fires", async () => {
+		// Generate enough output that some of it is likely buffered in cat's
+		// stdout pipe at the moment cat itself exits. Pre-fix (using 'exit'
+		// rather than 'close') the parent would publish the exit event before
+		// these last-buffered bytes had been read. With 'close' we wait until
+		// stdout is fully drained.
+		let rawAtExit: string | undefined;
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{
+					command: 'for i in $(seq 1 200); do echo "row $i"; done; printf "FINAL_MARKER\\n"; exit 0',
+					tmuxRunner: runner,
+				},
+				{
+					onExit: (c) => {
+						exitCode = c;
+						rawAtExit = session.getRawStream({ stripAnsi: false });
+					},
+				},
+			),
+		);
+		await waitFor(() => exitCode !== undefined, 5000);
+
+		// The final marker MUST be present in rawOutput at the moment
+		// onExit fired — not in some later 'data' event. This is the
+		// exact race the 'close' switch fixes.
+		expect(rawAtExit).toBeDefined();
+		expect(rawAtExit!.includes("FINAL_MARKER")).toBe(true);
+	});
+
+	it("completion-style consumer pattern: getTailLines in onExit shows the final line", async () => {
+		// Mirrors how headless-monitor / handoff-utils consume sessions:
+		// they call getTailLines synchronously inside onExit. With the
+		// close-event fix this returns the final state.
+		let tailAtExit: string[] = [];
+		let exitCode: number | undefined;
+		const session = track(
+			new PtyPaneSession(
+				{
+					command: 'for i in $(seq 1 50); do echo "row $i"; done; echo FINAL_LINE; exit 0',
+					tmuxRunner: runner,
+				},
+				{
+					onExit: (c) => {
+						exitCode = c;
+						tailAtExit = session.getTailLines({ lines: 1, ansi: false }).lines;
+					},
+				},
+			),
+		);
+		await waitFor(() => exitCode !== undefined, 5000);
+		expect(tailAtExit).toEqual(["FINAL_LINE"]);
+	});
+});
