@@ -760,8 +760,8 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		const config = loadRuntimeConfig(ctx.cwd);
 		try {
 			await ctx.ui.custom<InteractiveShellResult>(
-				(tui, theme, _kb, done) =>
-					new InteractiveShellOverlay(tui, theme, {
+				(tui, theme, _kb, done) => {
+					const overlay = new InteractiveShellOverlay(tui, theme, {
 						command: record.command,
 						existingSession: record.session,
 						sessionId: pinnedId,
@@ -774,11 +774,14 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 						// session visible. The popout overlay should stay open until
 						// the user actively closes it — not auto-close after 10s.
 						disableExitAutoClose: true,
-						// True open/close toggle: the same focusShortcut the user
-						// pressed to open this popout closes it again. Widget below
-						// the chat retains the session state.
-						focusShortcutCloses: true,
-					}, config, done),
+					}, config, done);
+					// Register a coordinator-level closer so the extension's
+					// terminal-input listener (which intercepts focusShortcut
+					// before it can reach overlay.handleInput) can implement the
+					// open/close toggle by calling this. Cleared in endOverlay().
+					coordinator.setOverlayCloser(() => overlay.close());
+					return overlay;
+				},
 				createOverlayUiOptions(config),
 			);
 		} finally {
@@ -1209,6 +1212,15 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 				return undefined;
 			}
 			if (matchesKey(data, startupConfig.focusShortcut)) {
+				// Pinned-mode popouts register a closer here. When set, the
+				// focusShortcut becomes a true open/close toggle: the same key
+				// that opened the popout dismisses it. Without this branch the
+				// listener would just toggle focus state forever, never reaching
+				// the overlay's own close path.
+				if (coordinator.hasOverlayCloser()) {
+					coordinator.invokeOverlayCloser();
+					return { consume: true };
+				}
 				if (coordinator.isOverlayFocused()) {
 					coordinator.unfocusOverlay();
 				} else {

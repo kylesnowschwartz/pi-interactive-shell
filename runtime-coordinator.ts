@@ -8,6 +8,14 @@ const MONITOR_HISTORY_LIMIT = 200;
 export class InteractiveShellCoordinator {
 	private overlayOpen = false;
 	private overlayHandle: OverlayHandle | null = null;
+	/**
+	 * If set, calling this dismisses the active overlay using its native
+	 * close path (e.g. finishWithBackground for running sessions or
+	 * finishWithExit for exited ones). Pinned-mode popouts install a closer
+	 * here so the extension-level input listener can implement focusShortcut
+	 * as a true open/close toggle without racing the listener’s consume.
+	 */
+	private overlayCloser: (() => void) | null = null;
 	private headlessMonitors = new Map<string, HeadlessDispatchMonitor>();
 	private monitorEventHistory = new Map<string, MonitorEventPayload[]>();
 	private monitorEventCounters = new Map<string, number>();
@@ -28,7 +36,20 @@ export class InteractiveShellCoordinator {
 
 	endOverlay(): void {
 		this.overlayOpen = false;
+		this.overlayCloser = null;
 		this.clearOverlayHandle();
+	}
+
+	setOverlayCloser(close: (() => void) | null): void {
+		this.overlayCloser = close;
+	}
+
+	hasOverlayCloser(): boolean {
+		return this.overlayCloser !== null;
+	}
+
+	invokeOverlayCloser(): void {
+		this.overlayCloser?.();
 	}
 
 	focusOverlay(): void {

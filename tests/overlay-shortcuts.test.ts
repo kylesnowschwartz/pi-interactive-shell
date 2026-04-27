@@ -90,6 +90,9 @@ async function setupHarness(): Promise<Harness> {
 			beginOverlay = vi.fn(() => true);
 			endOverlay = vi.fn();
 			setOverlayHandle = vi.fn();
+			hasOverlayCloser = vi.fn(() => false);
+			invokeOverlayCloser = vi.fn();
+			setOverlayCloser = vi.fn();
 			clearOverlayHandle = vi.fn();
 			constructor() {
 				coordinatorInstance = this;
@@ -166,6 +169,21 @@ describe("overlay focus and side-chat guards", () => {
 		coordinatorInstance.overlayFocused = true;
 		expect(onTerminalInput("FOCUS")).toEqual({ consume: true });
 		expect(coordinatorInstance.unfocusOverlay).toHaveBeenCalledTimes(1);
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it("invokes the overlay closer instead of toggling focus when one is registered", async () => {
+		const { onTerminalInput, coordinatorInstance, notify } = await setupHarness();
+		coordinatorInstance.overlayOpen = true;
+		coordinatorInstance.overlayFocused = true;
+		// Pinned popouts register a closer; listener should call it instead of
+		// toggling focus state.
+		coordinatorInstance.hasOverlayCloser = vi.fn(() => true);
+
+		expect(onTerminalInput("FOCUS")).toEqual({ consume: true });
+		expect(coordinatorInstance.invokeOverlayCloser).toHaveBeenCalledTimes(1);
+		expect(coordinatorInstance.focusOverlay).not.toHaveBeenCalled();
+		expect(coordinatorInstance.unfocusOverlay).not.toHaveBeenCalled();
 		expect(notify).not.toHaveBeenCalled();
 	});
 

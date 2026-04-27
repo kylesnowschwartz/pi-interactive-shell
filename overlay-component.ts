@@ -613,6 +613,21 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}, this.options);
 	}
 
+	/**
+	 * Public close: dismiss the overlay using the appropriate finishWith*
+	 * path for the current session state. Used by the focusShortcut-as-close
+	 * toggle in pinned-mode popouts (the extension-level input listener
+	 * intercepts the focusShortcut before it reaches handleInput, so the
+	 * popout flow installs a coordinator-level closer that calls this).
+	 */
+	close(): void {
+		if (this.session.exited) {
+			this.finishWithExit();
+		} else {
+			this.finishWithBackground();
+		}
+	}
+
 	private finishWithExit(): void {
 		if (this.finished) return;
 		this.finished = true;
