@@ -36,6 +36,36 @@ function sanitizeLine(line: string): string {
 	return out;
 }
 
+/**
+ * Find the last row in an xterm buffer whose plain (right-trimmed) translation
+ * is non-empty, and return one past its index (i.e. the effective length of the
+ * populated portion of the buffer).
+ *
+ * xterm always allocates at least `rows` lines in the active buffer, even before
+ * the cursor reaches the bottom. So `buffer.length` over-reports the populated
+ * extent: a 40-row buffer that has only seen 8 lines of output reports length=40,
+ * with rows 8–39 entirely blank. Slicing the tail directly off `buffer.length`
+ * returns blanks and the caller sees nothing.
+ *
+ * For typical agent output (continuous emission) this scan terminates after 0–2
+ * iterations. Worst case is a buffer that's been mostly cleared—still O(rows).
+ *
+ * Exported for unit testing.
+ */
+export function findEffectiveBufferEnd(buffer: {
+	length: number;
+	getLine: (i: number) => { translateToString: (trimRight?: boolean) => string } | undefined;
+}): number {
+	let effectiveEnd = buffer.length;
+	while (effectiveEnd > 0) {
+		const lineObj = buffer.getLine(effectiveEnd - 1);
+		const plain = lineObj?.translateToString(true) ?? "";
+		if (plain.length > 0) break;
+		effectiveEnd--;
+	}
+	return effectiveEnd;
+}
+
 type CellStyle = {
 	bold: boolean;
 	dim: boolean;
@@ -465,15 +495,16 @@ export class PtyTerminalSession {
 	} {
 		const requested = Math.max(0, Math.trunc(options.lines));
 		const maxChars = options.maxChars !== undefined ? Math.max(0, Math.trunc(options.maxChars)) : undefined;
-		
+
 		const buffer = this.xterm.buffer.active;
-		const totalLinesInBuffer = buffer.length;
-		
-		if (requested === 0) {
+		const effectiveEnd = findEffectiveBufferEnd(buffer);
+		const totalLinesInBuffer = effectiveEnd;
+
+		if (requested === 0 || effectiveEnd === 0) {
 			return { lines: [], totalLinesInBuffer, truncatedByChars: false };
 		}
 
-		const start = Math.max(0, totalLinesInBuffer - requested);
+		const start = Math.max(0, effectiveEnd - requested);
 		const out: string[] = [];
 		let remainingChars = maxChars;
 		let truncatedByChars = false;
@@ -482,8 +513,8 @@ export class PtyTerminalSession {
 		if (useAnsi) {
 			const serialized = this.serializer!.serialize();
 			const serializedLines = serialized.split(/\r?\n/);
-			if (serializedLines.length >= totalLinesInBuffer) {
-				for (let i = start; i < totalLinesInBuffer; i++) {
+			if (serializedLines.length >= effectiveEnd) {
+				for (let i = start; i < effectiveEnd; i++) {
 					const raw = serializedLines[i] ?? "";
 					const line = sanitizeLine(raw) + "\u001b[0m";
 					if (remainingChars !== undefined) {
@@ -499,7 +530,7 @@ export class PtyTerminalSession {
 			}
 		}
 
-		for (let i = start; i < totalLinesInBuffer; i++) {
+		for (let i = start; i < effectiveEnd; i++) {
 			const lineObj = buffer.getLine(i);
 			const line = sanitizeLine(lineObj?.translateToString(true) ?? "");
 			if (remainingChars !== undefined) {
