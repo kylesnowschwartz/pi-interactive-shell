@@ -2,7 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@mariozechner/pi-tui";
 import { InteractiveShellOverlay } from "./overlay-component.js";
 import { ReattachOverlay } from "./reattach-overlay.js";
-import { setupPinnedWidget, type PinnedWidgetHandle } from "./pinned-widget.js";
+import { type PinnedWidgetHandle } from "./pinned-widget.js";
+import { spawnPinnedSession } from "./pinned-session.js";
 import { PtyTerminalSession } from "./pty-session.js";
 import { formatDuration, formatDurationMs } from "./types.js";
 import type {
@@ -593,56 +594,6 @@ function registerHeadlessActive(
 	});
 }
 
-/**
- * Register a pinned-render session in the active pool so the agent's
- * tool surface (interactive_shell({ sessionId, kill, ... })) can find it.
- *
- * Like registerHeadlessActive but WITHOUT a HeadlessDispatchMonitor. Pinned
- * sessions are non-blocking widgets, not dispatched headless runs; there's
- * no monitor to drive completion notifications. The session manager still
- * needs a registered ActiveSession entry so getOutput / kill / write resolve.
- */
-function registerPinnedActive(
-	id: string,
-	command: string,
-	reason: string | undefined,
-	session: PtyTerminalSession,
-	startTime: number,
-	config: InteractiveShellConfig,
-): void {
-	const queryState = createSessionQueryState();
-	sessionManager.registerActive({
-		id,
-		command,
-		reason,
-		write: (data) => session.write(data),
-		kill: () => {
-			session.kill();
-			sessionManager.unregisterActive(id, true);
-			// Do NOT call sessionManager.remove(id) here. Removing would dispose
-			// the PtyTerminalSession (tearing down xterm) and trigger onChange,
-			// which would dispose the pinned widget — making the widget vanish
-			// on kill while natural exit leaves it visible. Instead, schedule a
-			// deferred cleanup so the widget shows the final 'exited' state for
-			// a few minutes, then auto-disposes (matches the headless-dispatch
-			// completion pattern). User can dismissBackground earlier to clear.
-			sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
-		},
-		background: () => {},
-		getOutput: (opts) => getSessionOutput(session, config, queryState, opts, undefined),
-		getStatus: () => (session.exited ? "exited" : "running"),
-		getRuntime: () => Date.now() - startTime,
-		getResult: () => undefined,
-		onComplete: (cb) => {
-			// No monitor; wire directly to the session's exit listener.
-			// ActiveSession's onComplete callback is no-arg — it just signals
-			// completion. Pi reads getResult() afterward for details (we
-			// return undefined since we don't track full results for pinned).
-			session.addExitListener(() => cb());
-		},
-	});
-}
-
 
 function makeNonBlockingUpdateHandler(pi: ExtensionAPI): (update: HandsFreeUpdate) => void {
 	return (update) => {
@@ -999,48 +950,20 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 		}
 
 		if (render === "pinned") {
-			// Pinned mode: spawn the same PtyTerminalSession as overlay/dispatch,
-			// register it in the session manager so output queries / kill /
-			// /attach all work normally, and stand up the widget. Returns
-			// immediately so the agent gets control back; the user uses the
-			// focusShortcut to pop out into the existing overlay when they
-			// want to interact with the agent directly.
-			const id = generateSessionId(name);
-			const session = new PtyTerminalSession(
-				{ command: effectiveCommand, cwd: effectiveCwd, cols: 120, rows: 40, scrollback: config.scrollbackLines },
-			);
-			const startTime = Date.now();
-			sessionManager.add(effectiveCommand, session, name, effectiveReason, { id, noAutoCleanup: true, startedAt: new Date(startTime) });
-			// Also register in the active pool so the agent's tool surface
-			// (interactive_shell({ sessionId, kill, ... })) resolves to this
-			// session. Without this, querying or killing a pinned session
-			// from the agent fails with 'Session not found or no longer active'.
-			registerPinnedActive(id, effectiveCommand, effectiveReason, session, startTime, config);
-
-			const widget = setupPinnedWidget({
-				sessionId: id,
-				command: effectiveCommand,
-				startedAt: new Date(startTime),
-				session,
-				ctx: { ui: ctx.ui as any, hasUI: hasUI },
+			// Whole pinned-session lifecycle (PTY + sessionManager add + active
+			// pool registration + widget + exit/kill cleanup) lives in
+			// pinned-session.ts. We just track the widget handle here so the
+			// focusShortcut popout and onChange disposal hook can find it.
+			const { id, widget } = spawnPinnedSession({
+				command: effectiveCommand!,
+				cwd: effectiveCwd,
+				name,
+				reason: effectiveReason,
+				config,
+				ctx: { ui: ctx.ui, hasUI },
 			});
 			if (widget) {
 				pinnedWidgets.set(id, widget);
-				// addExitListener (vs setEventHandlers) is ADDITIVE — it returns
-				// an unsubscriber and doesn't clobber other handlers. This matters
-				// because when the user pops out via focusShortcut,
-				// InteractiveShellOverlay calls setEventHandlers on the same
-				// session and would replace any onExit we'd registered.
-				session.addExitListener((code) => {
-					widget.markExited(code ?? null);
-					// Schedule deferred cleanup. Mirrors the kill-callback path so
-					// natural exit and explicit kill both retain the widget for ~5
-					// minutes (showing the final exit state) and then auto-dismiss.
-					// Without this the session lingers in sessionManager forever
-					// because we passed noAutoCleanup: true at add() time.
-					sessionManager.scheduleCleanup(id, 5 * 60 * 1000);
-					sessionManager.unregisterActive(id, true);
-				});
 			}
 
 			return {
