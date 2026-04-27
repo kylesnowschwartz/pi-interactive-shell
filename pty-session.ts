@@ -13,11 +13,34 @@ const OSC_REGEX = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const APC_REGEX = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const DCS_REGEX = /\x1bP[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const CSI_REGEX = /\x1b\[[0-9;?]*[A-Za-z]/g;
-const ESC_SINGLE_REGEX = /\x1b[@-_]/g;
+// ESC + single Fe-class char (0x40-0x5F = @, A-Z, [, \, ], ^, _).
+// We MUST exclude `[` (0x5B). CSI_REGEX above runs first and preserves SGR
+// sequences ending in `m` as-is (returning the match unchanged). After that
+// pass the kept SGR still begins with the literal bytes ESC `[`. If this
+// regex's class included `[`, the next pass would match those two bytes and
+// strip them, turning '\x1b[38;2;R;G;Bm Hello' into the literal text
+// '38;2;R;G;Bm Hello'. That regression bit the pinned widget (which uses
+// the serializer + sanitizeLine path) once getTailLines started returning
+// real content; the overlay's getViewportLines path generates SGR codes
+// directly from cells and never runs sanitizeLine on its happy path, which
+// is why the bug was invisible there.
+//
+// We KEEP P, ], _, and \ in the class even though they're multi-char
+// introducers (DCS/OSC/APC and ST). Their full-sequence regexes run first
+// and consume complete sequences entirely; this fallback is just a defensive
+// cleanup for broken/truncated multi-char sequences whose terminators got
+// dropped, which is rare but worth handling.
+const ESC_SINGLE_REGEX = /\x1b[\x40-\x5a\x5c-\x5f]/g;
 const CONTROL_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]/g;
 
 
-function sanitizeLine(line: string): string {
+/**
+ * Strip control codes that the TUI can't render safely while preserving SGR
+ * color sequences. Exported for unit testing the regex composition; the
+ * production callers (getTailLines / getViewportLines fallback) reach this
+ * via the closures inside this module.
+ */
+export function sanitizeLine(line: string): string {
 	let out = line;
 	if (out.includes("\u001b")) {
 		out = out.replace(OSC_REGEX, "");
