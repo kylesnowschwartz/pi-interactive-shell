@@ -820,7 +820,18 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 
 		if (matchesKey(data, this.config.focusShortcut)) {
-			this.options.onUnfocus?.();
+			if (this.options.focusShortcutCloses) {
+				// True open/close toggle for pinned-mode popouts: the same key
+				// the user pressed to open this overlay also dismisses it. The
+				// widget below the chat retains the session's state.
+				if (this.session.exited) {
+					this.finishWithExit();
+				} else {
+					this.finishWithBackground();
+				}
+			} else {
+				this.options.onUnfocus?.();
+			}
 			return;
 		}
 
@@ -1030,7 +1041,9 @@ export class InteractiveShellOverlay implements Component, Focusable {
 		}
 
 		const footerLines: string[] = [];
-		const focusHint = `${formatShortcut(this.config.focusShortcut)} ${this.focused ? "unfocus" : "focus shell"}`;
+		const focusHint = this.options.focusShortcutCloses
+			? `${formatShortcut(this.config.focusShortcut)} close`
+			: `${formatShortcut(this.config.focusShortcut)} ${this.focused ? "unfocus" : "focus shell"}`;
 
 		if (this.state === "detach-dialog") {
 			footerLines.push(row(accent("Session actions:")));
@@ -1046,7 +1059,10 @@ export class InteractiveShellOverlay implements Component, Focusable {
 					: warning(`✗ Exited with code ${this.session.exitCode}`);
 			footerLines.push(row(exitMsg));
 			if (this.options.disableExitAutoClose) {
-				footerLines.push(row(dim(`Press any key to close • ${focusHint}`)));
+				// Pinned-popout context: list the available actions explicitly so
+				// the user isn't guessing how to dismiss. "any other key" is the
+				// catch-all that hits the state===exited branch in handleInput.
+				footerLines.push(row(dim(`Ctrl+T transfer • ${focusHint} • any other key dismisses`)));
 			} else {
 				footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close) • ${focusHint}`)));
 			}

@@ -167,6 +167,23 @@ export interface InteractiveShellOptions {
 	 * actively closes it.
 	 */
 	disableExitAutoClose?: boolean;
+	/**
+	 * Make the focusShortcut close the overlay instead of just unfocusing it.
+	 * The default focus/unfocus split is right for overlay/dispatch flows where
+	 * the overlay IS the visible state of the session and "unfocus" lets you
+	 * keep watching it while typing in pi chat.
+	 *
+	 * For pinned-mode popouts the widget below the pi chat already shows the
+	 * session, so the popout overlay is the user saying "I want to look right
+	 * now". The natural reverse gesture is the same shortcut — making
+	 * focusShortcut a true open/close toggle instead of an asymmetric
+	 * open-vs-unfocus pair.
+	 *
+	 * Effect when true: focusShortcut inside the overlay calls
+	 * finishWithBackground() (running) or finishWithExit() (exited) instead of
+	 * onUnfocus. The widget below remains visible after close.
+	 */
+	focusShortcutCloses?: boolean;
 }
 
 export type DialogChoice = "kill" | "background" | "transfer" | "cancel" | "return-to-agent";

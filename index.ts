@@ -774,6 +774,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 						// session visible. The popout overlay should stay open until
 						// the user actively closes it — not auto-close after 10s.
 						disableExitAutoClose: true,
+						// True open/close toggle: the same focusShortcut the user
+						// pressed to open this popout closes it again. Widget below
+						// the chat retains the session state.
+						focusShortcutCloses: true,
 					}, config, done),
 				createOverlayUiOptions(config),
 			);
