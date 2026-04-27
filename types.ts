@@ -158,6 +158,15 @@ export interface InteractiveShellOptions {
 	// Existing PTY session (for attach flow -- skip creating a new PTY)
 	existingSession?: import("./pty-session.js").PtyTerminalSession;
 	onUnfocus?: () => void;
+	/**
+	 * Suppress the post-exit auto-close countdown. The overlay normally
+	 * starts a `config.exitAutoCloseDelay`-second countdown when the session
+	 * has exited (so an abandoned overlay doesn't linger forever). For
+	 * pinned-mode popouts the persistent widget below the chat IS the
+	 * lingering UI, so the popout overlay should stay open until the user
+	 * actively closes it.
+	 */
+	disableExitAutoClose?: boolean;
 }
 
 export type DialogChoice = "kill" | "background" | "transfer" | "cancel" | "return-to-agent";

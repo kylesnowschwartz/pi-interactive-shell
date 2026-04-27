@@ -120,8 +120,10 @@ export class InteractiveShellOverlay implements Component, Focusable {
 
 				this.stopHandsFreeUpdates();
 				this.state = "exited";
-				this.exitCountdown = this.config.exitAutoCloseDelay;
-				this.startExitCountdown();
+				if (!this.options.disableExitAutoClose) {
+					this.exitCountdown = this.config.exitAutoCloseDelay;
+					this.startExitCountdown();
+				}
 				this.tui.requestRender();
 			},
 		};
@@ -196,8 +198,10 @@ export class InteractiveShellOverlay implements Component, Focusable {
 				} else {
 					this.stopHandsFreeUpdates();
 					this.state = "exited";
-					this.exitCountdown = this.config.exitAutoCloseDelay;
-					this.startExitCountdown();
+					if (!this.options.disableExitAutoClose) {
+						this.exitCountdown = this.config.exitAutoCloseDelay;
+						this.startExitCountdown();
+					}
 					this.tui.requestRender();
 				}
 			});
@@ -1041,7 +1045,11 @@ export class InteractiveShellOverlay implements Component, Focusable {
 					? th.fg("success", "✓ Exited successfully")
 					: warning(`✗ Exited with code ${this.session.exitCode}`);
 			footerLines.push(row(exitMsg));
-			footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close) • ${focusHint}`)));
+			if (this.options.disableExitAutoClose) {
+				footerLines.push(row(dim(`Press any key to close • ${focusHint}`)));
+			} else {
+				footerLines.push(row(dim(`Closing in ${this.exitCountdown}s... (any key to close) • ${focusHint}`)));
+			}
 		} else if (this.state === "hands-free") {
 			if (this.focused) {
 				footerLines.push(row(dim(`🤖 Agent controlling • Type to take over • Ctrl+T transfer • Ctrl+B background • ${focusHint}`)));

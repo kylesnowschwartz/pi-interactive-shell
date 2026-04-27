@@ -770,6 +770,10 @@ export default function interactiveShellExtension(pi: ExtensionAPI) {
 						reason: record.reason,
 						startedAt: record.startedAt.getTime(),
 						onUnfocus: () => coordinator.unfocusOverlay(),
+						// The pinned widget below the chat already keeps the exited
+						// session visible. The popout overlay should stay open until
+						// the user actively closes it — not auto-close after 10s.
+						disableExitAutoClose: true,
 					}, config, done),
 				createOverlayUiOptions(config),
 			);
