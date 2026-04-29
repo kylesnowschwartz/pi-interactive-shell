@@ -4,3 +4,8 @@ package-lock.json
 .DS_Store
 .cloned-sources/
 .agent-history/
+# Ephemeral agent session state
+.aos/
+# Praxis install backups
+.ide_backup/
+SPECKY-ROUTING.md
